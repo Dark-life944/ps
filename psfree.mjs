@@ -14,7 +14,7 @@ class MassOOBExploit {
     async massOOBSpray() {
         log("Starting massive OOB spraying...");
         
-        for (let round = 0; round < 10; round++) {
+        for (let round = 0; round < 100; round++) {
             log(`OOB round ${round}`);
             
             // كل جولة: spray ثم OOB-write
