@@ -1,5 +1,5 @@
-import { Int } from './int64.mjs';
-import { die, log, clear_log, sleep, hex } from './utils.mjs';
+import { Int } from './module/int64.mjs';
+import { die, log, clear_log, sleep, hex } from './module/utils.mjs';
 
 class FastFillOOBExploit {
     constructor() {
