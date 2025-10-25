@@ -1,6 +1,5 @@
 import { log } from './module/utils.mjs';
 
-const returnValue = parseInt(process.argv[2] || "-889", 10);
 const MARK = 0x42424242;
 
 function allocSpray(leftCount, rightCount) {
@@ -61,7 +60,8 @@ function check(left, right) {
     }
 }
 
-(function main() {
+function main() {
+    const returnValue = -889;
     log("Return value:" + returnValue);
     const { left, right } = allocSpray(20, 20);
     const tmp = [];
@@ -70,4 +70,6 @@ function check(left, right) {
     trigger(returnValue);
     check(left, right);
     log("done");
-})();
+}
+
+main();
