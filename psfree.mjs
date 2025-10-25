@@ -36,7 +36,7 @@ class SimpleOOBSpray {
 
     async triggerOOB(round) {
         const v0 = [];
-        for (let i = 0; i < 100000; i++) {
+        for (let i = 0; i < 1000000; i++) {
             v0[i] = [];
         }
         
