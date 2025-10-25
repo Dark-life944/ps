@@ -1,5 +1,9 @@
 import { log, sleep } from './module/utils.mjs';
 
+function gc() {
+    new Uint8Array(4 * 1024 * 1024);
+}
+
 class ContinuousOOBSpray {
     constructor() {
         this.spray = [];
