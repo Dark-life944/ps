@@ -1,4 +1,4 @@
-import { log } from './utils.mjs';
+import { log } from './module/utils.mjs';
 
 const MARK = 0x42424242;
 
