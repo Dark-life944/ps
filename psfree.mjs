@@ -13,7 +13,7 @@ class SimpleOOBSpray {
     }
 
     async sprayArrays() {
-        for (let i = 0; i < 1000; i++) {
+        for (let i = 0; i < 100000; i++) {
             const arr = new Array(100);
             for (let j = 0; j < arr.length; j++) {
                 arr[j] = {
